@@ -8,12 +8,23 @@ The WorkBuddy Agent performs the steps; the user personally completes browser au
 
 To migrate an existing REL installation, start again from step 1, register a new client in step 2, have the user authorize on the new domain, and run step 4 in `exchange` mode. The script accepts migration only from `https://oasn-pre.haimawan.com/mcp/v1/open-agent` to `https://oasn-ow.haimawan.com/mcp/v1/open-agent`, preserving other MCP servers, custom fields, and disabled state. Other environments and custom URLs remain conflicts. Credentials for the old domain cannot be used with `resume` or `refresh`; do not relabel their `resource` or reuse their tokens. Recovery applies only after new credentials have been saved. Trust uses the new origin; uninstall remains compatible with both REL URLs.
 
+## 下载镜像与提交
+
+安装 Agent 选源：`https://gitee.com/openagent-org/workbuddy-plugin.git`，备用 `https://github.com/openagent-org/workbuddy-plugin.git`。保留已有官方源，`setup.py --source gitee|github` 才显式切换；旧官网源仅供迁移。
+
+`git ls-remote --exit-code <仓库> refs/heads/rel` 取得 40 位 `install_sha`。解析前网络失败可从备用源取 SHA；取得后沿用同 SHA、同路径，不再解析备用 `rel`。命令须替换 SHA、基址和来源；GitHub 基址为 `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/<INSTALL_SHA>`。
+
+仅 DNS、连接、超时、传输中断、HTTP 5xx 可在原命令结束后切备用一次。审批拒绝、证书错误、401/403/404/429/451、摘要/语法/安装/OAuth 失败不换源；保留原命令授权流程，不绕过审批。下载私有临时文件完整后执行一次；换源丢弃残片，只补失败下载，不拼接输出或重跑已执行的换码、配置、卸载、重启。
+
+原生 WorkBuddy 按 `rel`/默认分支下载，部分版本忽略 `ref`。回读官方来源、安装/缓存版本；可取 Git HEAD 时须等于 `install_sha`，否则停止验收。取不到 HEAD 仅报告来源、版本、完整文件核验，不宣称固定提交通过。切源不改 MCP、不重复 OAuth。
+
 ## 1. Prepare the local environment
 
 At the start, say only `Installing OpenAgent…`. When the browser is open and user authorization is required, say only `Please sign in to OpenAgent in the opened page…`. Do not repeatedly narrate every step.
 
 ```bash
 curl --version
+git --version
 python3 --version
 ```
 
@@ -94,10 +105,12 @@ Replace `CLIENT_ID`, `CODE`, and the matching `VERIFIER`. Keep `mode='exchange'`
 (
   set -eu
   mode='exchange'
+  install_sha='<INSTALL_SHA>'
+  install_base="https://gitee.com/openagent-org/workbuddy-plugin/raw/$install_sha"
   exchange_dir="$(mktemp -d "${TMPDIR:-/tmp}/openagent-exchange.XXXXXX")"
   trap 'rm -f -- "$exchange_dir/exchange.py"; rmdir -- "$exchange_dir"' EXIT
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-    'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-exchange.py' \
+    "$install_base/scripts/openagent-workbuddy-exchange.py" \
     -o "$exchange_dir/exchange.py"
   python3 "$exchange_dir/exchange.py" --mode "$mode" <<'JSON'
 {"client_id":"<CLIENT_ID>","code":"<AUTHORIZATION_CODE>","verifier":"<VERIFIER>"}
@@ -148,22 +161,27 @@ Run this section only after OAuth, MCP merge and initialization, and trust verif
 
 On macOS, use two separate Bash tool calls, each with `run_in_background=false` and `timeout=120000`. The first prepares settings, verifies the plugin, and downloads the published restart script. The second directly invokes that script so the host evaluates the command after the exclusion is written. The script itself creates the detached worker. Do not combine the calls, use host background mode, disable sandbox protections, or execute workspace copies of these scripts.
 
-The plugin source is the `rel` branch of GitHub `openagent-org/workbuddy-plugin`. The script migrates only the exact previous official website source, preserves other configuration, and stops on an unknown source with the same name. `PLUGIN_READY` requires the host's GitHub marketplace registration and matching installed/cache manifest versions of at least `0.2.83`. If the host still registers the old source or cache, wait for it to refresh; stop on timeout without deleting caches or reporting migration complete.
+setup 已执行后如重启脚本下载失败，仅按“下载镜像与提交”处理该文件并继续尚未执行的步骤；不重跑 setup、OAuth 或整个准备命令。
+
+登记所选官方源 `rel`；旧官网源可迁移，未知同名源停止。未传 `--source` 保留已有官方源，新装默认 Gitee。须回读匹配的宿主来源，安装与缓存版本一致且至少 `0.2.84`，才接受 `PLUGIN_READY`。旧源/缓存未刷新则等待；60 秒超时不作为换源依据，不清缓存、不报告完成。原生下载明确发生可回退网络错误时，确认已结束且未安排重启，只恢复来源和未完成下载，不重复 OAuth。
 
 ```bash
 (
   set -eu
+  install_source='gitee'
+  install_sha='<INSTALL_SHA>'
+  install_base="https://gitee.com/openagent-org/workbuddy-plugin/raw/$install_sha"
   message_file='<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>'
   chmod 600 "$message_file"
   restart_dir="$(mktemp -d "$HOME/.workbuddy/.openagent-restart.XXXXXX")"
   trap 'rm -f -- "$restart_dir/setup.py" "$restart_dir/openagent-workbuddy-restart.sh"; rmdir -- "$restart_dir"' EXIT
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-    'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-setup.py' \
+    "$install_base/scripts/openagent-workbuddy-setup.py" \
     -o "$restart_dir/setup.py"
-  python3 "$restart_dir/setup.py"
+  python3 "$restart_dir/setup.py" --source "$install_source"
 # restart
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-    'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-restart.sh' \
+    "$install_base/scripts/openagent-workbuddy-restart.sh" \
     -o "$restart_dir/openagent-workbuddy-restart.sh"
   sh -n "$restart_dir/openagent-workbuddy-restart.sh"
   chmod 700 "$restart_dir/openagent-workbuddy-restart.sh"
@@ -184,7 +202,7 @@ The foreground verifies existing fixed-source trust without rereading MCP conten
 
 A worker PID proves only process creation. Acceptance requires old-process exit, new-instance launch, exactly one complete startup message in the new task, and the required tools loaded. If sending is complete or unknown, inspect the new task before any retry. Never repeat OAuth, restart, or message delivery automatically. If the automated flow cannot be used and delivery is confirmed not attempted, ask the user to fully quit and reopen WorkBuddy, create a new task, and send the same message manually.
 
-Windows automatic restart and send are not verified. Before restarting manually, download `openagent-workbuddy-setup.py` from the fixed REL URL shown above, check the download exit code, run `python3 <DOWNLOADED_SCRIPT_PATH>`, and confirm `PLUGIN_READY`. For downloads, use `curl.exe`, UTF-8 output, a unique system temporary directory, exit-code checks, and `try/finally` cleanup of the downloaded script and temporary directory. Feed the exchange JSON through a single-quoted here-string to the same fixed REL Python script. Do not use the macOS `chmod`, `mktemp`, or restart commands.
+Windows automatic restart and send are not verified. Before restarting manually, download `openagent-workbuddy-setup.py` from the fixed REL URL shown above, check the download exit code, run `python3 <DOWNLOADED_SCRIPT_PATH> --source <gitee-or-github>`, and confirm `PLUGIN_READY`. For downloads, use `curl.exe`, UTF-8 output, a unique system temporary directory, exit-code checks, and `try/finally` cleanup of the downloaded script and temporary directory. Feed the exchange JSON through a single-quoted here-string to the same fixed REL Python script. Do not use the macOS `chmod`, `mktemp`, or restart commands.
 
 ## 8. Report completion or failure
 

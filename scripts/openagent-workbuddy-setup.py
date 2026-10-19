@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """合并 WorkBuddy 插件设置并只读等待下载就绪；失败时停止，不安排重启。"""
 
+import argparse
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--source', choices=('gitee', 'github'), help='新安装默认 gitee；已有官方来源在未指定时保留')
+official_sources = {
+    'gitee': {'source': 'git', 'url': 'https://gitee.com/openagent-org/workbuddy-plugin.git', 'ref': 'rel'},
+    'github': {'source': 'git', 'url': 'https://github.com/openagent-org/workbuddy-plugin.git', 'ref': 'rel'},
+}
+requested_source = parser.parse_args().source
+selected_source = official_sources[requested_source or 'gitee']
+
 # settings
 import json, os, tempfile
 from pathlib import Path
@@ -23,10 +34,13 @@ try:
     if path.is_symlink(): raise SystemExit('配置文件是符号链接，停止')
     before = path.read_bytes() if path.exists() else None
     data = json.loads(before) if before is not None else {}
-    source = {'source': 'git', 'url': 'https://github.com/openagent-org/workbuddy-plugin.git', 'ref': 'rel'}
+    source = selected_source
     legacy_source = {'source': 'git', 'url': 'https://oasn-ow.haimawan.com/git/openagent/workbuddy-plugin.git', 'ref': 'rel'}
     market = data.setdefault('extraKnownMarketplaces', {}).setdefault('openagent-workbuddy', {'source': source})
-    if market.get('source') not in (source, legacy_source): raise SystemExit('openagent-workbuddy 市场来源冲突，停止')
+    if market.get('source') not in (*official_sources.values(), legacy_source): raise SystemExit('openagent-workbuddy 市场来源冲突，停止')
+    if requested_source is None and market['source'] in official_sources.values():
+        source = market['source']
+    selected_source = source
     market['source'] = source
     data.setdefault('enabledPlugins', {})['openagent@openagent-workbuddy'] = True
     mode = path.stat().st_mode & 0o777 if before is not None else 0o600
@@ -63,12 +77,12 @@ required = ['skills/openagent-' + name + '/SKILL.md' for name in 'first-task-rou
 required.append('skills/openagent-first-task-router/references/result-validation-and-delivery.md')
 required.append('skills/openagent-login/runtime-sign-in.md')
 required.extend('skills/openagent-run-agent/scripts/' + name for name in ('cos_upload.cjs', 'cos_sdk.lock.json', 'cos_sdk.cjs.gz'))
-def github_plugin_ready(record, cache):
+def official_plugin_ready(record, cache):
     # 只改 settings 不代表宿主已迁移；旧源登记或旧版缓存不能作为完成证据。
     try:
         known = json.loads((root / 'plugins/known_marketplaces.json').read_bytes()).get('openagent-workbuddy', {})
         source = known.get('source', {})
-        url = 'https://github.com/openagent-org/workbuddy-plugin.git'
+        url = selected_source['url']
         if (source.get('source', known.get('type')) != 'git'
                 or source.get('repo') not in (None, '')
                 or source.get('url', source.get('path')) != url
@@ -78,8 +92,8 @@ def github_plugin_ready(record, cache):
         version = record.get('version')
         if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
             return False
-        # 0.2.83 是首个 GitHub 运行载荷版本；以后版本继续保留这个迁移下限。
-        if tuple(map(int, version.split('.'))) < (0, 2, 83):
+        # 0.2.84 是首个支持两官方镜像的版本；旧缓存不能证明本次更新完成。
+        if tuple(map(int, version.split('.'))) < (0, 2, 84):
             return False
         manifest = json.loads((cache / '.workbuddy-plugin/plugin.json').read_bytes())
         return manifest.get('name') == 'openagent' and manifest.get('version') == version
@@ -118,7 +132,7 @@ deadline = time.monotonic() + 60
 try:
     while True:
         settings = json.loads((root / 'settings.json').read_bytes())
-        source = {'source': 'git', 'url': 'https://github.com/openagent-org/workbuddy-plugin.git', 'ref': 'rel'}
+        source = selected_source
         if settings.get('enabledPlugins', {}).get(plugin) is not True or settings.get('extraKnownMarketplaces', {}).get('openagent-workbuddy', {}).get('source') != source:
             raise SystemExit('插件未启用或市场来源不符，停止')
         try:
@@ -130,7 +144,7 @@ try:
             if record.get('scope') != 'user': continue
             cache = Path(record['installPath']).resolve()
             if not cache.is_relative_to(base): raise SystemExit('插件登记路径异常，停止')
-            if (github_plugin_ready(record, cache)
+            if (official_plugin_ready(record, cache)
                     and all(p.is_file() and p.stat().st_size > 0 for p in map(cache.joinpath, required))
                     and bundle_ready(cache)):
                 ready = True
@@ -139,7 +153,7 @@ try:
             print('PLUGIN_READY')
             break
         remaining = deadline - time.monotonic()
-        if remaining <= 0: raise SystemExit('GitHub 插件来源或下载尚未确认，等待超时；请检查插件页是否已刷新新源、Git 和网络，不自动重新执行合并命令')
+        if remaining <= 0: raise SystemExit('所选官方插件来源或下载尚未确认，等待超时；请检查插件页是否已刷新所选源、Git 和网络，不自动重新执行合并命令')
         time.sleep(min(1, remaining))
 except (OSError, ValueError, TypeError, AttributeError, KeyError):
     raise SystemExit('插件下载尚未确认，安装登记或文件无法读取') from None

@@ -24,11 +24,14 @@ Use `display_locale`; if unset, choose explicit preference > trusted Host locale
 
 ## Login
 
-Use the current WorkBuddy host's local command runner. Download the published `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-exchange.py` to a private temporary directory using `curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https'` (`curl.exe` on Windows). Stop on download failure. Run `python3 "<downloaded-script>" --mode sign-in` once; remove only that temporary directory after the process exits.
+使用当前 WorkBuddy 宿主的本地命令执行器。下载优先使用 `https://gitee.com/openagent-org/workbuddy-plugin.git`，备用为 `https://github.com/openagent-org/workbuddy-plugin.git`。先用 `git ls-remote --exit-code <所选仓库> refs/heads/rel` 保存完整 40 位 `install_sha`；首源在解析 SHA 前发生可回退网络错误时，备用源可确定本次初始 SHA。取得 SHA 后不得重新解析备用源的 rel。下载路径固定为 `scripts/openagent-workbuddy-exchange.py`：首源 `https://gitee.com/openagent-org/workbuddy-plugin/raw/<INSTALL_SHA>/scripts/openagent-workbuddy-exchange.py`，备用 `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/<INSTALL_SHA>/scripts/openagent-workbuddy-exchange.py`，两次沿用相同完整 SHA 和路径。
+
+使用 `curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https'`（Windows 使用 `curl.exe`）完整下载到私有临时目录；仅 DNS、连接、超时、传输中断或 HTTP 5xx 可在原命令结束后切到备用源一次。权限或审批拒绝、证书校验、HTTP 401/403/404/429/451、摘要或语法校验错误不换源；备用失败停止，不来回循环。丢弃失败下载的残片；完整下载成功后只运行一次 `python3 "<downloaded-script>" --mode sign-in`，退出后只清理该临时目录。脚本已启动、登录取消、OAuth/MCP 或配置失败均不得换源重跑登录；保持前述单次登录和已有会话等待规则。
 
 If curl fails, request one retry outside the sandbox using the exact
 same command (Codex: sandbox_permissions="require_escalated",
 with a justification).
+该审批规则仅处理同一下载命令；审批拒绝不得换源，批准后仍仅在上述网络错误时切换一次镜像。
 
 On success, use the response; on execution failure, use the existing
 fallback. If approval is denied, continue without the manual.

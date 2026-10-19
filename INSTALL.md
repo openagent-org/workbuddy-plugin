@@ -4,7 +4,7 @@
 
 附件上传需要 Node.js 20+。插件内置固定版本 COS Node.js SDK bundle，打包在执行 Skill 的 `scripts/cos_sdk.cjs.gz`；`scripts/cos_upload.cjs` 和 `scripts/cos_sdk.lock.json` 与该文件一并安装。首次需要 SDK 时，脚本离线校验压缩包及解压内容的 SHA-256，并解压到 `scripts/.cos-sdk/<归档 SHA-256>/cos_sdk.cjs`；后续校验后复用，缓存缺失、损坏或 bundle 更新时自动重新解压，退出后保留缓存。`scripts/` 目录需当前用户可写。清理上传检查点不加载 SDK。不搜索宿主 SDK，不运行 `npm install`，也不下载依赖。缺少安装文件或校验失败时停止并修复插件安装。安装与 OAuth 脚本仍需要 Python 3.9+。
 
-由 WorkBuddy Agent 执行，用户本人完成浏览器授权。第 4 步同次调用下载执行 rel 脚本；macOS 的设置与插件核验先在一次 Bash 完成，再由下一次 Bash 直接调用 rel 已发布的重启脚本。
+由 WorkBuddy Agent 执行，用户本人完成浏览器授权。第 4 步同次调用下载执行已解析提交的脚本；macOS 的设置与插件核验先在一次 Bash 完成，再由下一次 Bash 直接调用 rel 已发布的重启脚本。
 
 ## 用户可见输出
 
@@ -12,10 +12,21 @@
 
 最终回复只按“完成报告”输出两行纯文本，无标题、列表、代码块或补充。返回值只供衔接验证；不复述协议版本、路径、权限、工具清单、scope、Token 有效期或刷新说明。宿主展示的工具调用和日志不受本文回复约束。
 
+## 下载镜像与提交
+
+安装 Agent 选源：`https://gitee.com/openagent-org/workbuddy-plugin.git`，备用 `https://github.com/openagent-org/workbuddy-plugin.git`。保留已有官方源，`setup.py --source gitee|github` 才显式切换；旧官网源仅供迁移。
+
+`git ls-remote --exit-code <仓库> refs/heads/rel` 取得 40 位 `install_sha`。解析前网络失败可从备用源取 SHA；取得后沿用同 SHA、同路径，不再解析备用 `rel`。命令须替换 SHA、基址和来源；GitHub 基址为 `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/<INSTALL_SHA>`。
+
+仅 DNS、连接、超时、传输中断、HTTP 5xx 可在原命令结束后切备用一次。审批拒绝、证书错误、401/403/404/429/451、摘要/语法/安装/OAuth 失败不换源；保留原命令授权流程，不绕过审批。下载私有临时文件完整后执行一次；换源丢弃残片，只补失败下载，不拼接输出或重跑已执行的换码、配置、卸载、重启。
+
+原生 WorkBuddy 按 `rel`/默认分支下载，部分版本忽略 `ref`。回读官方来源、安装/缓存版本；可取 Git HEAD 时须等于 `install_sha`，否则停止验收。取不到 HEAD 仅报告来源、版本、完整文件核验，不宣称固定提交通过。切源不改 MCP、不重复 OAuth。
+
 ## 准备
 
 ```bash
 curl --version
+git --version
 python3 --version
 ```
 
@@ -88,7 +99,7 @@ print('CODE=' + captured['code'])
 
 ## 4. 交换 Token、配置 MCP、验证连接并登记信任（exchange）
 
-填入本次 `CLIENT_ID`、`CODE` 和同组 `VERIFIER`，保持 `mode='exchange'`，执行一次工具调用：curl 下载固定 rel 脚本，Python 内部换 Token、私有保存、合并 MCP、初始化并登记信任。不将 Token 返回给模型，不使用 Edit 或拆分调用；授权参数通过标准输入 JSON 传入，不放入脚本参数。下载或执行失败停止，不换源或回退旧安装器；退出时清理临时脚本。新脚本须先发布到 rel，此入口才能使用。
+填入本次 `CLIENT_ID`、`CODE` 和同组 `VERIFIER`，保持 `mode='exchange'`，执行一次工具调用：curl 下载本次完整 SHA 的脚本，Python 内部换 Token、私有保存、合并 MCP、初始化并登记信任。不将 Token 返回给模型，不使用 Edit 或拆分调用；授权参数通过标准输入 JSON 传入，不放入脚本参数。下载失败仅按“下载镜像与提交”处理；脚本执行失败停止，不回退旧安装器或重放副作用；退出时清理临时脚本。新脚本须先发布到 rel，此入口才能使用。
 
 凭据与 MCP 分别保存到 `~/.workbuddy/openagent-rel-oauth.json`、`~/.workbuddy/mcp.json`，POSIX 权限为 `0600`。安装 Agent 不读取、打印凭据文件或 MCP Authorization。保留其他 MCP、顶层配置、自定义字段、请求头及禁用状态；损坏 JSON、非法类型、符号链接或同名其他来源在换码前停止。私有临时文件原子替换，原文件变化时停止，不覆盖外部修改。
 
@@ -98,10 +109,12 @@ print('CODE=' + captured['code'])
 (
   set -eu
   mode='exchange'
+  install_sha='<INSTALL_SHA>'
+  install_base="https://gitee.com/openagent-org/workbuddy-plugin/raw/$install_sha"
   exchange_dir="$(mktemp -d "${TMPDIR:-/tmp}/openagent-exchange.XXXXXX")"
   trap 'rm -f -- "$exchange_dir/exchange.py"; rmdir -- "$exchange_dir"' EXIT
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-    'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-exchange.py' \
+    "$install_base/scripts/openagent-workbuddy-exchange.py" \
     -o "$exchange_dir/exchange.py"
   python3 "$exchange_dir/exchange.py" --mode "$mode" <<'JSON'
 {"client_id":"<CLIENT_ID>","code":"<AUTHORIZATION_CODE>","verifier":"<VERIFIER>"}
@@ -174,22 +187,25 @@ OpenAgent 已安装，打开新用户引导
 
 需要 Python 3.9+ 标准库，无须 pip 包。先用文件工具创建 UTF-8 JSON 文件，内容为 `{"message":"完整启动消息"}`；通过 JSON 序列化保留换行、引号和反斜杠，正文不放入命令参数或日志。第一次 Bash 设置该文件权限为 `0600`，不要额外执行 chmod 工具调用。
 
-将消息占位符替换为该 JSON 的绝对路径，用原生前台 Bash 执行下方准备命令。无论读取本地 INSTALL.md 还是公开链接，都下载固定 rel 已发布的 `openagent-workbuddy-setup.py` 和 `openagent-workbuddy-restart.sh`，不执行工作区脚本。前者依次合并用户和当前项目 settings 并核验插件，通过后才下载后者到当前用户的 `~/.workbuddy/openagent-workbuddy-restart.sh`。下载或语法检查失败时停止，不换源重试。不设置 `run_in_background=true` 或 `dangerouslyDisableSandbox` 绕过授权，也不关闭安全设置重试。源脚本修改需随插件发布后才进入此线上下载入口。
+将消息占位符替换为该 JSON 的绝对路径，用原生前台 Bash 执行下方准备命令。无论读取本地 INSTALL.md 还是公开链接，都下载本次从 rel 解析出的同一完整 SHA 下的 `openagent-workbuddy-setup.py` 和 `openagent-workbuddy-restart.sh`，不执行工作区脚本。前者依次合并用户和当前项目 settings 并核验插件，通过后才下载后者到当前用户的 `~/.workbuddy/openagent-workbuddy-restart.sh`。下载失败仅按“下载镜像与提交”切换一次；语法检查失败停止。setup 执行后只补失败的重启脚本下载，继续未执行步骤，不重跑准备命令。不设置 `run_in_background=true` 或 `dangerouslyDisableSandbox` 绕过授权，也不关闭安全设置重试。源脚本修改需随插件发布后才进入此线上下载入口。
 
 ```bash
 (
   set -eu
+  install_source='gitee'
+  install_sha='<INSTALL_SHA>'
+  install_base="https://gitee.com/openagent-org/workbuddy-plugin/raw/$install_sha"
   message_file='<完整启动消息JSON绝对路径>'
   chmod 600 "$message_file"
   restart_dir="$(mktemp -d "$HOME/.workbuddy/.openagent-restart.XXXXXX")"
   trap 'rm -f -- "$restart_dir/setup.py" "$restart_dir/openagent-workbuddy-restart.sh"; rmdir -- "$restart_dir"' EXIT
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-    'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-setup.py' \
+    "$install_base/scripts/openagent-workbuddy-setup.py" \
     -o "$restart_dir/setup.py"
-  python3 "$restart_dir/setup.py"
+  python3 "$restart_dir/setup.py" --source "$install_source"
 # restart
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
-    'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel/scripts/openagent-workbuddy-restart.sh' \
+    "$install_base/scripts/openagent-workbuddy-restart.sh" \
     -o "$restart_dir/openagent-workbuddy-restart.sh"
   sh -n "$restart_dir/openagent-workbuddy-restart.sh"
   chmod 700 "$restart_dir/openagent-workbuddy-restart.sh"
@@ -200,7 +216,7 @@ OpenAgent 已安装，打开新用户引导
 )
 ```
 
-插件来源为 GitHub `openagent-org/workbuddy-plugin` 的 `rel`。脚本可迁移精确匹配的旧官网官方源，保留其他配置；未知同名源停止。必须回读宿主的 GitHub 来源登记、安装与缓存清单版本一致且不低于 `0.2.83`，才接受 `PLUGIN_READY`。旧源或旧缓存仍在时等待宿主刷新；超时停止，不清缓存或报告迁移完成。
+登记所选官方源 `rel`；旧官网源可迁移，未知同名源停止。未传 `--source` 保留已有官方源，新装默认 Gitee。须回读匹配的宿主来源，安装与缓存版本一致且至少 `0.2.84`，才接受 `PLUGIN_READY`。旧源/缓存未刷新则等待；60 秒超时不作为换源依据，不清缓存、不报告完成。原生下载明确发生可回退网络错误时，确认已结束且未安排重启，只恢复来源和未完成下载，不重复 OAuth。
 
 ### macOS：第二次 Bash 直接安排重启
 
@@ -226,7 +242,7 @@ OpenAgent 已安装，打开新用户引导
 - 已发送或结果未知时先检查是否已有消息并确认是否已提交，不再次粘贴、回车或执行 install。已重启时检查新任务及输入框，不要求再次重启。
 - 自动流程不可用时，按实际状态恢复应用；确认消息未提交后，由用户完全退出、启动 WorkBuddy，新建任务并发送上一节的同一完整消息。已重启则直接检查新任务。
 
-Windows 自动退出及发送未验证，使用上述手动方式，不执行 macOS Shell。Windows 设置安装按文末 PowerShell 下载方式获取同一固定 rel 的 `openagent-workbuddy-setup.py`，检查下载退出码后执行 `python3 <下载脚本路径>`，并在 `try/finally` 中清理本次脚本及临时目录；不执行 chmod 或重启部分。
+Windows 自动退出及发送未验证，使用上述手动方式，不执行 macOS Shell。Windows 设置安装按文末 PowerShell 下载方式获取同一 SHA 的 `openagent-workbuddy-setup.py`，检查下载退出码后执行 `python3 <下载脚本路径> --source <所选源>`，并在 `try/finally` 中清理本次脚本及临时目录；不执行 chmod 或重启部分。
 
 ## 新任务排障
 

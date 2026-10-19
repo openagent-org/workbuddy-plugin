@@ -39,6 +39,7 @@ PLUGIN_ID = "openagent@" + MARKETPLACE
 MARKETPLACE_URL = "https://github.com/openagent-org/workbuddy-plugin.git"
 MARKETPLACE_URLS = {
     MARKETPLACE_URL,
+    "https://gitee.com/openagent-org/workbuddy-plugin.git",
     "https://oasn-ow.haimawan.com/git/openagent/workbuddy-plugin.git",
 }
 
