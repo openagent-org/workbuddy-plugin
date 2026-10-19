@@ -1,0 +1,15 @@
+{
+  "name": "openagent-workbuddy",
+  "owner": {
+    "name": "Huang Li"
+  },
+  "description": "OpenAgent WorkBuddy 插件 Marketplace（REL）",
+  "plugins": [
+    {
+      "name": "openagent",
+      "source": "./plugins/openagent",
+      "description": "复用共享 OpenAgent MCP 与五个 Skills。",
+      "version": "0.2.83"
+    }
+  ]
+}
