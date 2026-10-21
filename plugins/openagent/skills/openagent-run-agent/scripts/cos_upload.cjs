@@ -44,7 +44,10 @@ function loadSdk() {
     }
     const root = path.join(__dirname, '.cos-sdk');
     privateDirectory(root);
-    const directory = path.join(root, bundle.sha256);
+    // 第三方 bundle 按依赖加载，避免 Node 将其旧 API 当作应用代码报告弃用。
+    const modules = path.join(root, 'node_modules');
+    privateDirectory(modules);
+    const directory = path.join(modules, bundle.sha256);
     privateDirectory(directory);
     const file = path.join(directory, 'cos_sdk.cjs');
     const info = lstat(file);
@@ -179,8 +182,23 @@ function reportError(error) {
   } else if (error instanceof SourceChanged) {
     process.stderr.write('COS_UPLOAD_SOURCE_CHANGED: stop this upload; use a new upload key for the changed file.\n');
   } else {
-    // SDK 异常可能含签名或临时凭据，不输出原始异常。
+    // SDK 异常可能含签名或临时凭据，只保留已知错误码和HTTP状态。
     process.stderr.write('COS upload did not complete; do not start the Agent Run.\n');
+    const allowedCodes = new Set([
+      'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN',
+      'ERR_TLS_CERT_ALTNAME_INVALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_HAS_EXPIRED',
+      'EACCES', 'EPERM', 'ENOENT', 'EIO',
+      'AccessDenied', 'SignatureDoesNotMatch', 'RequestTimeTooSkewed', 'InvalidAccessKeyId',
+      'ExpiredToken', 'InvalidToken', 'NoSuchBucket', 'NoSuchUpload', 'RequestTimeout',
+      'InternalError', 'ServiceUnavailable', 'SlowDown',
+    ]);
+    const code = [error?.code, error?.error?.code, error?.error?.Code].find(value => allowedCodes.has(value));
+    const status = error?.statusCode;
+    const details = [];
+    if (code) details.push(`code=${code}`);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) details.push(`http_status=${status}`);
+    if (details.length) process.stderr.write(`COS_UPLOAD_ERROR: ${details.join(' ')}\n`);
   }
   process.exitCode = 1;
 }
