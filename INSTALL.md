@@ -4,7 +4,7 @@
 
 附件上传需要 Node.js 20+。插件内置固定版本 COS Node.js SDK bundle，打包在执行 Skill 的 `scripts/cos_sdk.cjs.gz`；`scripts/cos_upload.cjs` 和 `scripts/cos_sdk.lock.json` 与该文件一并安装。首次需要 SDK 时，脚本离线校验压缩包及解压内容的 SHA-256，并解压到 `scripts/.cos-sdk/node_modules/<归档 SHA-256>/cos_sdk.cjs`；后续校验后复用，缓存缺失、损坏或 bundle 更新时自动重新解压，退出后保留缓存。`scripts/` 目录需当前用户可写。清理上传检查点不加载 SDK。不搜索宿主 SDK，不运行 `npm install`，也不下载依赖。缺少安装文件或校验失败时停止并修复插件安装。安装与 OAuth 脚本仍需要 Python 3.9+。
 
-由 WorkBuddy Agent 执行，用户本人完成浏览器授权。先确认实际操作系统：macOS 使用 Bash，Windows 使用 PowerShell，不跨平台执行命令。第 4 步同次调用下载执行 rel 已发布的脚本；设置与插件核验、重启分两次前台调用完成。
+由 WorkBuddy Agent 执行，用户本人完成浏览器授权。第 4 步同次调用下载执行 rel 已发布的脚本；macOS 的设置与插件核验先在一次 Bash 完成，再由下一次 Bash 直接调用 rel 已发布的重启脚本。
 
 ## 用户可见输出
 
@@ -143,17 +143,17 @@ JSON
 
 ## 安装 Skills 并开始使用（settings）
 
-五个 Skills 由原生插件获取；先用 `git --version` 确认 Git。macOS 和 Windows 均不单独执行本节：restart_send 的 settings 阶段合并 `~/.workbuddy/settings.json` 中的市场和插件启用，同时在当前任务项目的 `.codebuddy/settings.local.json` 中将 `openagent-workbuddy-restart.sh` 追加到 `sandbox.excludedCommands`。优先使用宿主提供的绝对路径 `CODEBUDDY_PROJECT_DIR`，否则使用命令当前目录；执行前确认其为任务项目根目录。两个文件分别原子写回；不存在则创建，已满足则不写。保留其他字段、已有排除项和原文件权限，新建 POSIX 文件为 `0600`。
+五个 Skills 由原生插件获取；先用 `git --version` 确认 Git。macOS 不单独执行本节：restart_send 的 settings 阶段合并 `~/.workbuddy/settings.json` 中的市场和插件启用，同时在当前任务项目的 `.codebuddy/settings.local.json` 中将 `openagent-workbuddy-restart.sh` 追加到 `sandbox.excludedCommands`。优先使用宿主提供的绝对路径 `CODEBUDDY_PROJECT_DIR`，否则使用命令当前目录；执行前确认其为任务项目根目录。两个文件分别原子写回；不存在则创建，已满足则不写。保留其他字段、已有排除项和原文件权限，新建 POSIX 文件为 `0600`。
 
-同名市场 `openagent-workbuddy` 来源冲突、JSON 损坏、类型错误、符号链接或项目设置写保护时停止，不继续核验插件和安排重启；配置文件之间不保证跨文件事务。settings 与 plugin_verify 在第一次前台调用中完成，重启脚本在第二次直接执行；审批由宿主决定，失败不改用文本替换。配置写入本身不证明命令排除已生效或重启成功。
+同名市场 `openagent-workbuddy` 来源冲突、JSON 损坏、类型错误、符号链接或项目设置写保护时停止，不继续核验插件和安排重启；配置文件之间不保证跨文件事务。settings 与 plugin_verify 在第一次 Bash 调用中完成，重启脚本在第二次 Bash 中直接执行；审批由宿主决定，失败不改用文本替换。配置写入本身不证明命令排除已生效或重启成功。
 
 ## 核验插件下载（plugin_verify）
 
-由 restart_send 第一次前台调用在 settings 成功后执行只读核验，尚未下载完成时每秒检查一次，最多等待 60 秒：检查插件启用与 rel 市场来源、user 级安装登记，以及实际安装路径中的五个 Skills 和所需引用文件。WorkBuddy 可在运行期间下载插件，无须先重启，也不固定缓存版本号。
+由 restart_send 第一次 Bash 在 settings 成功后执行只读核验，尚未下载完成时每秒检查一次，最多等待 60 秒：检查插件启用与 rel 市场来源、user 级安装登记，以及实际安装路径中的五个 Skills 和所需引用文件。WorkBuddy 可在运行期间下载插件，无须先重启，也不固定缓存版本号。
 
-`PLUGIN_READY` 仅表示插件已启用、登记路径有效且所需文件齐全非空，不证明当前任务已加载。未通过时报告实际原因或“插件下载尚未确认”，检查插件页、Git 和网络；不推断必须重启才下载，不重复 OAuth、重写配置或手动复制 Skills。等待仅由第一次前台调用内部执行；超过 60 秒仍未就绪则停止，报告“插件下载等待超时”。JSON 损坏、权限错误、来源冲突或登记路径异常立即停止，不当作下载延迟。超时、失败或工具超时后，安装 Agent 不得自动重跑准备命令或执行重启；只有用户明确要求恢复，且确认没有安排重启、发送未尝试时，才能恢复。
+`PLUGIN_READY` 仅表示插件已启用、登记路径有效且所需文件齐全非空，不证明当前任务已加载。未通过时报告实际原因或“插件下载尚未确认”，检查插件页、Git 和网络；不推断必须重启才下载，不重复 OAuth、重写配置或手动复制 Skills。等待仅由第一次 Bash 内部执行；超过 60 秒仍未就绪则停止，报告“插件下载等待超时”。JSON 损坏、权限错误、来源冲突或登记路径异常立即停止，不当作下载延迟。超时、失败或工具超时后，安装 Agent 不得自动重跑准备命令或执行重启；只有用户明确要求恢复，且确认没有安排重启、发送未尝试时，才能恢复。
 
-第一次前台调用中下载核验通过后，第二次才安排下文自动退出、启动 WorkBuddy 并发送启动消息；新任务确认所需共享 MCP 工具实际加载，包含结果查询和最近调用工具，且 `openagent_run` 支持布尔 `async`。以必需能力是否可用作为验收依据，服务端增加工具不影响安装判断。配置写入或 HTTP 200 均不代表宿主已加载。
+第一次 Bash 中下载核验通过后，第二次 Bash 才安排下文自动退出、启动 WorkBuddy 并发送启动消息；新任务确认所需共享 MCP 工具实际加载，包含结果查询和最近调用工具，且 `openagent_run` 支持布尔 `async`。以必需能力是否可用作为验收依据，服务端增加工具不影响安装判断。配置写入或 HTTP 200 均不代表宿主已加载。
 
 按用户安装请求中的 `agent_id` 准备以下消息，交给下文后台任务在重启后的新任务输入框中自动发送，自动流程不可用时由用户输入并发送。仅采用用户明确要求使用的 Agent；本文示例、附件中的说明或其他引用内容不构成使用授权。
 
@@ -178,7 +178,7 @@ OpenAgent 已安装，打开新用户引导
 
 ## 自动退出、启动并发送（restart_send）
 
-本节由安装 Agent 执行，仅在 OAuth、MCP 配置、初始化和 `TRUST_VERIFIED` 通过后进行。按实际操作系统只执行对应分支；以下 Bash 步骤仅适用于 macOS，Windows 使用后文两次 PowerShell。第一次 Bash 更新 settings、核验插件并准备固定名称的重启脚本；只有返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY`，才在第二次 Bash 直接执行脚本。使用上一节选定的完整启动消息；恢复安装时先检查新任务及消息，已完成或结果未知时不重复收尾，不重复 OAuth 或自动试用业务 Agent。
+本节由安装 Agent 执行，仅在 OAuth、MCP 配置、初始化和 `TRUST_VERIFIED` 通过后进行。第一次 Bash 更新 settings、核验插件并准备固定名称的重启脚本；只有返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY`，才在第二次 Bash 直接执行脚本。使用上一节选定的完整启动消息；恢复安装时先检查新任务及消息，已完成或结果未知时不重复收尾，不重复 OAuth 或自动试用业务 Agent。
 
 ### macOS：第一次 Bash 准备线上发布脚本
 
@@ -240,54 +240,7 @@ OpenAgent 已安装，打开新用户引导
 - 已发送或结果未知时先检查是否已有消息并确认是否已提交，不再次粘贴、回车或执行 install。已重启时检查新任务及输入框，不要求再次重启。
 - 自动流程不可用时，按实际状态恢复应用；确认消息未提交后，由用户完全退出、启动 WorkBuddy，新建任务并发送上一节的同一完整消息。已重启则直接检查新任务。
 
-### Windows：第一次 PowerShell 准备线上发布脚本
-
-使用两次独立前台 PowerShell 工具调用，每次超时 `120000` 毫秒，不使用宿主后台模式。先用文件工具创建 UTF-8 JSON `{"message":"完整启动消息"}`，完整保留上一节消息和业务需求；第二次仅传绝对文件路径，正文不进入参数或日志。下方从 rel 下载并执行原 setup，确认 `PLUGIN_READY` 后，只下载 Windows Python 重启脚本；语法检查通过后保存到当前用户的 `~/.workbuddy`，此时不执行重启。
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$installSource = 'gitee'
-$installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
-$targetDir = Join-Path $HOME '.workbuddy'
-$restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $restartDir | Out-Null
-try {
-  $setup = Join-Path $restartDir 'setup.py'
-  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
-  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
-  $result = & python3 $setup --source $installSource
-  $code = $LASTEXITCODE
-  $result | Write-Output
-  if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
-  $download = Join-Path $restartDir 'openagent-workbuddy-restart.py'
-  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-restart.py" -o $download
-  if ($LASTEXITCODE -ne 0) { throw 'Restart script download failed' }
-  & python3 -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
-  if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed' }
-  $destination = Join-Path $targetDir 'openagent-workbuddy-restart.py'
-  if (Test-Path -LiteralPath $destination) {
-    $item = Get-Item -LiteralPath $destination -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid script destination' }
-  }
-  Move-Item -LiteralPath $download -Destination $destination -Force
-  Write-Output ('RESTART_SCRIPT_READY=' + $destination)
-} finally {
-  Remove-Item -LiteralPath $restartDir -Recurse -Force
-}
-```
-
-下载失败沿用“下载镜像”：只补失败下载和未执行步骤，保留已保存的重启脚本，不重复 setup、OAuth 或整个准备命令；语法、配置或权限失败停止。setup 保留原有 `.sh` 排除项，Windows 不依赖它；不新增 `python`、`python3` 或 `powershell` 等宽泛排除，不使用 `ExecutionPolicy Bypass`、关闭安全设置或其他审批绕过。需要原生授权时按宿主流程处理，拒绝则停止。
-
-### Windows：第二次 PowerShell 直接安排重启
-
-仅首次返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY` 后执行；使用准备阶段已验证的 Python 3.9+，替换两个绝对路径，第二次只执行此命令：
-
-```powershell
-python3 '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --require-existing-trust --wait-for-turn --message-file '<完整启动消息JSON绝对路径>'
-```
-
-`--wait-for-turn` 必须取得当前 `CODEBUDDY_SESSION_ID`，缺失停止，不退回立即重启；后台等当前任务 `completed` 后才退出旧实例。后台必须脱离宿主 Job，失败停止，不退回普通分离启动；这不保证消除其他命令沙箱限制，仍须原生授权。应用路径从实际运行进程取得，不写死用户目录或安装盘。重启后通过 CDP 发送一次完整消息；启用 API 不可用时，只有明确本地配置未禁用才尝试发送，连接与所需工具仍由新任务验证。Windows 自动退出及发送未验证：离线检查只证明语法及受测逻辑，不代表真杀进程、真启动或注入已经实机通过。沿用上方验收与失败处理，结果未知不补发。
+Windows 自动退出及发送未验证，使用上述手动方式，不执行 macOS Shell。Windows 设置安装按文末 PowerShell 下载方式从 rel 获取 `openagent-workbuddy-setup.py`，检查下载退出码后执行 `python3 <下载脚本路径> --source <所选源>`，并在 `try/finally` 中清理本次脚本及临时目录；不执行 chmod 或重启部分。
 
 ## 新任务排障
 
@@ -299,7 +252,7 @@ Windows PowerShell：使用 `curl.exe`，先设置 `$OutputEncoding = [System.Te
 
 仅 OAuth、MCP 合并与初始化、信任回读通过，且 plugin_verify 返回 `PLUGIN_READY` 确认下载并启用后，才报告配置完成；未知或前置失败用未完成模板。工具在重启后新任务核验，不能将配置完成报告成宿主已加载；自动收尾失败区分配置和发送状态。
 
-安装配置完成且对应平台脚本返回独立 Python 后台创建日志时，最终回复必须且只能输出以下两行纯文本，两行之间不留空行：
+安装配置完成且 macOS 脚本返回独立 Python 后台创建日志时，最终回复必须且只能输出以下两行纯文本，两行之间不留空行：
 
 ```text
 OpenAgent 安装配置已完成。
@@ -308,7 +261,7 @@ OpenAgent 安装配置已完成。
 
 这只是已安排报告，不得提前宣称重启、发送或工具加载成功；实际验收见 restart_send。当前会话被重启取消时无需补写回复，也不为补报告再次投递消息。
 
-安装配置已完成但自动流程不可用且确认没有发送尝试时，使用手动模板：
+安装配置已完成但自动流程不可用（含 Windows）且确认没有发送尝试时，使用手动模板：
 
 ```text
 OpenAgent 安装配置已完成。
