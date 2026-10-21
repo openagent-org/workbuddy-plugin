@@ -6,6 +6,8 @@ Attachment uploads require Node.js 20+. The plugin includes the fixed COS Node.j
 
 The WorkBuddy Agent performs the steps; the user personally completes browser authorization. Run steps in order and stop on failure. Do not expose an authorization code, PKCE verifier, access token, or refresh token.
 
+On Windows, use WorkBuddy's native PowerShell tool. For every call that executes `openagent-workbuddy-exchange.py`, `openagent-workbuddy-setup.py`, or `openagent-workbuddy-restart.py`, set `dangerouslyDisableSandbox=true`, `run_in_background=false`, and `timeout=120000` (milliseconds) to request the native approval needed to write user installation settings or restart the app. These are tool arguments alongside `command`, not Python arguments; do not use Codex's `sandbox_permissions`. This requests permission; the host determines approval and actual execution. Stop if the parameter is unavailable, approval is denied or times out, or the command remains blocked by the sandbox. Do not disable security settings or switch entry points to retry. Do not first run these scripts normally and then replay them. If the tool returns an unfinished task, wait on that same call. Skip macOS-only Bash steps and use the Windows PowerShell section below.
+
 To migrate an existing REL installation, start again from step 1, register a new client in step 2, have the user authorize on the new domain, and run step 4 in `exchange` mode. The script accepts migration only from `https://oasn-pre.haimawan.com/mcp/v1/open-agent` to `https://oasn-ow.haimawan.com/mcp/v1/open-agent`, preserving other MCP servers, custom fields, and disabled state. Other environments and custom URLs remain conflicts. Credentials for the old domain cannot be used with `resume` or `refresh`; do not relabel their `resource` or reuse their tokens. Recovery applies only after new credentials have been saved. Trust uses the new origin; uninstall remains compatible with both REL URLs.
 
 ## Download mirrors
@@ -200,13 +202,62 @@ The foreground verifies existing fixed-source trust without rereading MCP conten
 
 A worker PID proves only process creation. Acceptance requires old-process exit, new-instance launch, exactly one complete startup message in the new task, and the required tools loaded. If sending is complete or unknown, inspect the new task before any retry. Never repeat OAuth, restart, or message delivery automatically. If the automated flow cannot be used and delivery is confirmed not attempted, ask the user to fully quit and reopen WorkBuddy, create a new task, and send the same message manually.
 
-Windows automatic restart and send are not verified. Before restarting manually, download `openagent-workbuddy-setup.py` from the `rel` URL shown above, check the download exit code, run `python3 <DOWNLOADED_SCRIPT_PATH> --source <gitee-or-github>`, and confirm `PLUGIN_READY`. For downloads, use `curl.exe`, UTF-8 output, a unique system temporary directory, exit-code checks, and `try/finally` cleanup of the downloaded script and temporary directory. Feed the exchange JSON through a single-quoted here-string to the same Python script from `rel`. Do not use the macOS `chmod`, `mktemp`, or restart commands.
+### Windows: first foreground PowerShell call
+
+After OAuth, MCP verification, and `TRUST_VERIFIED` succeed, use two separate foreground PowerShell tool calls. Each call must request native approval with `dangerouslyDisableSandbox=true` as specified at the start of this guide. Create the UTF-8 startup-message JSON with the file tool first, preserving the complete message and business request. Pass only its absolute path in the second call; do not place its content in arguments or logs. Download and run the published setup first. Only after it returns `PLUGIN_READY`, download the Windows Python restart script, check its syntax, and save it under the current user's `~/.workbuddy` without running a restart.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$installSource = 'gitee'
+$installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
+$targetDir = Join-Path $HOME '.workbuddy'
+$restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $restartDir | Out-Null
+try {
+  $setup = Join-Path $restartDir 'setup.py'
+  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
+  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
+  $result = & python3 $setup --source $installSource
+  $code = $LASTEXITCODE
+  $result | Write-Output
+  if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
+  $download = Join-Path $restartDir 'openagent-workbuddy-restart.py'
+  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-restart.py" -o $download
+  if ($LASTEXITCODE -ne 0) { throw 'Restart script download failed' }
+  & python3 -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
+  if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed' }
+  $destination = Join-Path $targetDir 'openagent-workbuddy-restart.py'
+  if (Test-Path -LiteralPath $destination) {
+    $item = Get-Item -LiteralPath $destination -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid script destination' }
+  }
+  Move-Item -LiteralPath $download -Destination $destination -Force
+  Write-Output ('RESTART_SCRIPT_READY=' + $destination)
+} finally {
+  Remove-Item -LiteralPath $restartDir -Recurse -Force
+}
+```
+
+For a failed download, apply "Download mirrors" only to that file and continue the unexecuted steps. Preserve the saved restart script; do not rerun setup, OAuth, or the entire preparation command. Stop on syntax, configuration, or permission failures. The setup script remains unchanged; Windows does not rely on the `.sh` exclusion it writes. Do not add broad `python`, `python3`, or `powershell` exclusions, use `ExecutionPolicy Bypass`, disable security settings, or bypass approval. Follow native host approval and stop if denied.
+
+### Windows: second foreground PowerShell call
+
+Proceed only after `PLUGIN_READY` and `RESTART_SCRIPT_READY`. Use the Python 3.9+ checked during preparation, replace both absolute paths, and run only:
+
+```powershell
+python3 '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --require-existing-trust --wait-for-turn --message-file '<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>'
+```
+
+`--wait-for-turn` requires the current `CODEBUDDY_SESSION_ID`; if absent, stop instead of restarting immediately. The worker waits for `completed` before exiting old processes. It must break away from the host Job; failure stops without falling back to ordinary detached launch. This does not remove all command sandbox restrictions; native approval still applies. Discover the application executable from its running process rather than a fixed user directory or installation drive. Send the complete message once through CDP after restart. If the enable API is unavailable, attempt sending only when local configuration explicitly confirms the connector is not disabled; verify its connection and required tools in the new task. Actual Windows process termination, relaunch, and message injection have not been tested on a Windows host; offline checks do not prove those stages succeeded. Apply the acceptance and failure rules above; never resend when the result is unknown.
+
+For Windows OAuth commands, use `curl.exe`, UTF-8 output, a unique system temporary directory, exit-code checks, and `try/finally` cleanup. Feed exchange JSON through a single-quoted here-string to the Python script published on `rel`. Do not run macOS `chmod`, `mktemp`, or Bash restart commands.
 
 ## 8. Report completion or failure
 
 Only after OAuth, MCP merge and initialization, trust readback, and `PLUGIN_READY` all succeed may configuration be reported as complete. Tools are verified in the new task after restart; configuration completion must not be reported as successful host loading.
 
-When macOS scheduling returns the independent Python worker creation log, the final response must contain exactly these two plain-text lines:
+When scheduling on the selected platform returns the independent Python worker creation log, the final response must contain exactly these two plain-text lines:
 
 ```text
 OpenAgent installation and configuration are complete.

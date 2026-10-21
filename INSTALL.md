@@ -6,6 +6,8 @@
 
 由 WorkBuddy Agent 执行，用户本人完成浏览器授权。第 4 步同次调用下载执行 rel 已发布的脚本；macOS 的设置与插件核验先在一次 Bash 完成，再由下一次 Bash 直接调用 rel 已发布的重启脚本。
 
+Windows 使用 WorkBuddy 原生 PowerShell 工具。执行 `openagent-workbuddy-exchange.py`、`openagent-workbuddy-setup.py` 和 `openagent-workbuddy-restart.py` 时，每次工具调用设置 `dangerouslyDisableSandbox=true`、`run_in_background=false`、`timeout=120000`（毫秒），申请写入用户安装配置或重启应用所需的沙箱外权限。这些是与 `command` 同级的工具参数，不是 Python 参数，也不使用 Codex 的 `sandbox_permissions`。参数仅提出申请，审批及实际执行方式以宿主结果为准；参数不可用、审批拒绝或超时、仍受沙箱拦截时停止，不关闭安全设置或换入口重试。不先普通执行这些脚本再重放；工具返回未完成任务时只等待原调用。Windows 跳过 macOS 专用 Bash 步骤，使用下方 PowerShell 分支。
+
 ## 用户可见输出
 
 实际执行下列步骤。开始只说“正在安装 OpenAgent…”，浏览器已打开且需要用户授权时只说“请在打开的页面中登录 OpenAgent…”。不重复提醒或逐步播报。
@@ -240,7 +242,54 @@ OpenAgent 已安装，打开新用户引导
 - 已发送或结果未知时先检查是否已有消息并确认是否已提交，不再次粘贴、回车或执行 install。已重启时检查新任务及输入框，不要求再次重启。
 - 自动流程不可用时，按实际状态恢复应用；确认消息未提交后，由用户完全退出、启动 WorkBuddy，新建任务并发送上一节的同一完整消息。已重启则直接检查新任务。
 
-Windows 自动退出及发送未验证，使用上述手动方式，不执行 macOS Shell。Windows 设置安装按文末 PowerShell 下载方式从 rel 获取 `openagent-workbuddy-setup.py`，检查下载退出码后执行 `python3 <下载脚本路径> --source <所选源>`，并在 `try/finally` 中清理本次脚本及临时目录；不执行 chmod 或重启部分。
+### Windows：第一次 PowerShell 准备线上发布脚本
+
+OAuth、MCP 与 `TRUST_VERIFIED` 均通过后，使用两次独立前台 PowerShell 工具调用；每次均按文首设置 `dangerouslyDisableSandbox=true` 申请原生审批。先用文件工具创建 UTF-8 JSON `{"message":"完整启动消息"}`，完整保留上一节消息和业务需求；第二次仅传绝对文件路径，正文不进入参数或日志。下方从 rel 下载并执行原 setup，确认 `PLUGIN_READY` 后，只下载 Windows Python 重启脚本；语法检查通过后保存到当前用户的 `~/.workbuddy`，此时不执行重启。
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$installSource = 'gitee'
+$installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
+$targetDir = Join-Path $HOME '.workbuddy'
+$restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $restartDir | Out-Null
+try {
+  $setup = Join-Path $restartDir 'setup.py'
+  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
+  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
+  $result = & python3 $setup --source $installSource
+  $code = $LASTEXITCODE
+  $result | Write-Output
+  if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
+  $download = Join-Path $restartDir 'openagent-workbuddy-restart.py'
+  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-restart.py" -o $download
+  if ($LASTEXITCODE -ne 0) { throw 'Restart script download failed' }
+  & python3 -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
+  if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed' }
+  $destination = Join-Path $targetDir 'openagent-workbuddy-restart.py'
+  if (Test-Path -LiteralPath $destination) {
+    $item = Get-Item -LiteralPath $destination -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid script destination' }
+  }
+  Move-Item -LiteralPath $download -Destination $destination -Force
+  Write-Output ('RESTART_SCRIPT_READY=' + $destination)
+} finally {
+  Remove-Item -LiteralPath $restartDir -Recurse -Force
+}
+```
+
+下载失败沿用“下载镜像”：只补失败下载和未执行步骤，保留已保存的重启脚本，不重复 setup、OAuth 或整个准备命令；语法、配置或权限失败停止。setup 本身不变，Windows 不依赖它写入的 `.sh` 排除项；不新增 `python`、`python3` 或 `powershell` 等宽泛排除，不使用 `ExecutionPolicy Bypass`、关闭安全设置或其他审批绕过。需要原生授权时按宿主流程处理，拒绝则停止。
+
+### Windows：第二次 PowerShell 直接安排重启
+
+仅首次返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY` 后执行；使用准备阶段已验证的 Python 3.9+，替换两个绝对路径，第二次只执行此命令：
+
+```powershell
+python3 '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --require-existing-trust --wait-for-turn --message-file '<完整启动消息JSON绝对路径>'
+```
+
+`--wait-for-turn` 必须取得当前 `CODEBUDDY_SESSION_ID`，缺失停止，不退回立即重启；后台等当前任务 `completed` 后才退出旧实例。后台必须脱离宿主 Job，失败停止，不退回普通分离启动；这不保证消除其他命令沙箱限制，仍须原生授权。应用路径从实际运行进程取得，不写死用户目录或安装盘。重启后通过 CDP 发送一次完整消息；启用 API 不可用时，只有明确本地配置未禁用才尝试发送，连接与所需工具仍由新任务验证。Windows 自动退出及发送未验证：离线检查只证明语法及受测逻辑，不代表真杀进程、真启动或注入已经实机通过。沿用上方验收与失败处理，结果未知不补发。
 
 ## 新任务排障
 
@@ -252,7 +301,7 @@ Windows PowerShell：使用 `curl.exe`，先设置 `$OutputEncoding = [System.Te
 
 仅 OAuth、MCP 合并与初始化、信任回读通过，且 plugin_verify 返回 `PLUGIN_READY` 确认下载并启用后，才报告配置完成；未知或前置失败用未完成模板。工具在重启后新任务核验，不能将配置完成报告成宿主已加载；自动收尾失败区分配置和发送状态。
 
-安装配置完成且 macOS 脚本返回独立 Python 后台创建日志时，最终回复必须且只能输出以下两行纯文本，两行之间不留空行：
+安装配置完成且对应平台脚本返回独立 Python 后台创建日志时，最终回复必须且只能输出以下两行纯文本，两行之间不留空行：
 
 ```text
 OpenAgent 安装配置已完成。
@@ -261,7 +310,7 @@ OpenAgent 安装配置已完成。
 
 这只是已安排报告，不得提前宣称重启、发送或工具加载成功；实际验收见 restart_send。当前会话被重启取消时无需补写回复，也不为补报告再次投递消息。
 
-安装配置已完成但自动流程不可用（含 Windows）且确认没有发送尝试时，使用手动模板：
+安装配置已完成但自动流程不可用且确认没有发送尝试时，使用手动模板：
 
 ```text
 OpenAgent 安装配置已完成。
