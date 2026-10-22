@@ -9,7 +9,7 @@
       "name": "openagent",
       "source": "./plugins/openagent",
       "description": "复用共享 OpenAgent MCP 与五个 Skills。",
-      "version": "0.2.88"
+      "version": "0.2.89"
     }
   ]
 }

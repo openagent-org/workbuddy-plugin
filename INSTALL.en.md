@@ -8,6 +8,8 @@ The WorkBuddy Agent performs the steps; the user personally completes browser au
 
 On Windows, use WorkBuddy's native PowerShell tool. For every call that executes `openagent-workbuddy-exchange.py`, `openagent-workbuddy-setup.py`, or `openagent-workbuddy-restart.py`, set `dangerouslyDisableSandbox=true`, `run_in_background=false`, and `timeout=120000` (milliseconds) to request the native approval needed to write user installation settings or restart the app. These are tool arguments alongside `command`, not Python arguments; do not use Codex's `sandbox_permissions`. This requests permission; the host determines approval and actual execution. Stop if the parameter is unavailable, approval is denied or times out, or the command remains blocked by the sandbox. Do not disable security settings or switch entry points to retry. Do not first run these scripts normally and then replay them. If the tool returns an unfinished task, wait on that same call. Skip macOS-only Bash steps and use the Windows PowerShell section below.
 
+Windows uses the same official sources and download fallback rules as macOS: prefer Gitee, preserve an existing official source, and allow one switch to the other official source only for the download failures listed below. Publish this guide together with its matching `scripts/openagent-workbuddy-setup.py` to `rel`. macOS keeps its existing published flow.
+
 To migrate an existing REL installation, start again from step 1, register a new client in step 2, have the user authorize on the new domain, and run step 4 in `exchange` mode. The script accepts migration only from `https://oasn-pre.haimawan.com/mcp/v1/open-agent` to `https://oasn-ow.haimawan.com/mcp/v1/open-agent`, preserving other MCP servers, custom fields, and disabled state. Other environments and custom URLs remain conflicts. Credentials for the old domain cannot be used with `resume` or `refresh`; do not relabel their `resource` or reuse their tokens. Recovery applies only after new credentials have been saved. Trust uses the new origin; uninstall remains compatible with both REL URLs.
 
 ## Download mirrors
@@ -158,7 +160,7 @@ No `sa_` prefix is required; treat the ID as opaque and do not use placeholders 
 
 ## 7. Restart WorkBuddy and send once
 
-Run this section only after OAuth, MCP merge and initialization, and trust verification succeed. On macOS, the first Bash call verifies the plugin before preparing the restart script. Windows uses the two separate PowerShell calls below. Create a UTF-8 JSON file containing `{"message":"the complete startup message"}` using the file tool; JSON serialization must preserve newlines, quotes, and backslashes. Pass its absolute path as `message_file`.
+Run this section only after OAuth, MCP merge and initialization, and trust verification succeed. On macOS, the first Bash call verifies the plugin before preparing the restart script. Windows first downloads setup, performs a read-only preflight and any necessary native configuration edits, then uses separate PowerShell calls to prepare and schedule restart. Create a UTF-8 JSON file containing `{"message":"the complete startup message"}` using the file tool; JSON serialization must preserve newlines, quotes, and backslashes. Pass its absolute path as `message_file`.
 
 On macOS, use two separate Bash tool calls, each with `run_in_background=false` and `timeout=120000`. The first prepares settings, verifies the plugin, and downloads the published restart script. The second directly invokes that script so the host evaluates the command after the exclusion is written. The script itself creates the detached worker. Do not combine the calls, use host background mode, disable sandbox protections, or execute workspace copies of these scripts.
 
@@ -202,9 +204,13 @@ The foreground verifies existing fixed-source trust without rereading MCP conten
 
 A worker PID proves only process creation. Acceptance requires old-process exit, new-instance launch, exactly one complete startup message in the new task, and the required tools loaded. If sending is complete or unknown, inspect the new task before any retry. Never repeat OAuth, restart, or message delivery automatically. If the automated flow cannot be used and delivery is confirmed not attempted, ask the user to fully quit and reopen WorkBuddy, create a new task, and send the same message manually.
 
-### Windows: first foreground PowerShell call
+### Windows: 1. Preflight and edit only when needed
 
-After OAuth, MCP verification, and `TRUST_VERIFIED` succeed, use two separate foreground PowerShell tool calls with the tool arguments and native approval requirements specified at the start of this guide. Create a UTF-8 JSON file containing `{"message":"the complete startup message"}` with the file tool first, preserving the complete message and business request. Pass only its absolute path in the second call; do not place its content in arguments or logs. In the first call, run the existing setup and confirm `PLUGIN_READY`, then download and check the single Windows restart script. Record the absolute paths of the script and the actual Python executable; do not create a scheduled task or restart yet.
+After OAuth, MCP verification, and `TRUST_VERIFIED` succeed, follow the three Windows steps below with the native tool arguments and approval requirements specified at the start of this guide.
+
+First select the official source under "Download mirrors": new installations default to Gitee, and existing official sources are preserved under the same rules. The example uses Gitee. When GitHub is selected, set `$installSource` to `github` and `$installBase` to `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel` together, and carry the same selection into Windows step 2. Then download this run's setup script from the selected source to a unique temporary file. Record `SETUP_SCRIPT_READY`; Windows step 2 must reuse that same absolute path from this download, not a workspace copy, local package, or historical script. Stop on download or syntax failure, or if the script does not support `--verify-only`; do not remove the argument and retry. If preflight or a later edit fails, clean up only the setup temporary file at the path printed by this run. If cleanup is denied, report the remaining path and stop. The expected configuration-required state retains the file for Windows step 2.
+
+`--verify-only` is read-only throughout; Windows skips project configuration and `.sh` exclusions. Stop on source conflicts, invalid format or types, permission denial, failed approval, or plugin verification timeout. Do not remove arguments, switch tools as a fallback, or relax security settings. The configuration-required marker below is the only expected state that permits editing.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -213,14 +219,78 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $env:PYTHONIOENCODING = 'utf-8'
 $installSource = 'gitee'
 $installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
+$setup = Join-Path ([IO.Path]::GetTempPath()) ('openagent-setup-' + [guid]::NewGuid().ToString('N') + '.py')
+try {
+  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
+  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
+  & python3 -X utf8 -B -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $setup
+  if ($LASTEXITCODE -ne 0) { throw 'Setup syntax check failed' }
+} catch {
+  Remove-Item -LiteralPath $setup -Force -ErrorAction SilentlyContinue
+  throw
+}
+Write-Output ('SETUP_SCRIPT_READY=' + $setup)
+& python3 -X utf8 -B $setup --source $installSource --verify-only
+$checkCode = $LASTEXITCODE
+Write-Output ('SETUP_CHECK_EXIT=' + $checkCode)
+```
+
+Evaluate `SETUP_CHECK_EXIT` together with the actual output; do not use the outer command's exit code from the final `Write-Output`:
+
+| Preflight result | Next step |
+| --- | --- |
+| `0` and `PLUGIN_READY` is present | Skip editing and proceed to Windows step 2. |
+| `1` and the script reports only `CONFIG_UPDATE_REQUIRED=<absolute path to the current user's .workbuddy/settings.json>` | Configuration needs updating. Permit the edits below only if the host also reports no denial, approval failure, or other exception. |
+| Any other result | Stop; do not treat an ordinary failure as configuration required. |
+
+When editing is required, use WorkBuddy's native Read/Edit tools with normal approval to merge only the following target fields:
+
+- Read the relevant fields at the path returned by preflight and recheck the source. Accept only a missing same-name marketplace, an official Gitee/GitHub git source with `ref=rel`, or the legacy website migration described in this guide. Stop on an unknown source, invalid structure, duplicate keys, or an edit target that cannot be uniquely located.
+- Use only Edit for an existing file. Preserve other plugins, marketplaces, and other fields in the `openagent-workbuddy` object. The example JSON is the merge target; do not use it to overwrite the whole file.
+- The marker does not mean the file is missing. Use native Write to create the minimal example JSON only when native Read or file metadata explicitly confirms the file is absent, rather than unreadable, and it is still absent immediately before writing. Stop if the file has appeared; do not overwrite it.
+- Change only these two targets. Do not change MCP, trust, sandbox switches, or project configuration, and do not print the complete settings file or credentials. Stop if the edit match fails, permission is denied, or approval fails; do not fall back to shell/Python or repeatedly edit.
+
+The JSON below uses Gitee as the example. When GitHub is selected, set the target `source.url` to `https://github.com/openagent-org/workbuddy-plugin.git` so it matches `$installSource` and `$installBase`.
+
+```json
+{
+  "enabledPlugins": {
+    "openagent@openagent-workbuddy": true
+  },
+  "extraKnownMarketplaces": {
+    "openagent-workbuddy": {
+      "source": {
+        "source": "git",
+        "url": "https://gitee.com/openagent-org/workbuddy-plugin.git",
+        "ref": "rel"
+      }
+    }
+  }
+}
+```
+
+### Windows: 2. Verify the plugin and prepare the restart script
+
+After Windows step 1, use the file tool to create a UTF-8 JSON file containing `{"message":"the complete startup message"}`, preserving the previously selected startup message and business request. Pass only the file's absolute path in later commands; do not place its content in arguments or logs.
+
+Replace `<SETUP_SCRIPT_READY_ABSOLUTE_PATH>` with the setup absolute path printed in Windows step 1, escaping each single quote as two single quotes. Carry forward the `$installSource` and `$installBase` values selected in step 1; the Gitee values below are examples, so replace both together if GitHub was selected rather than resetting the source. The command below reuses that script for read-only verification after editing. Only after `PLUGIN_READY` passes may it download the restart script from the selected source and record the script and Python paths. Stop if differences remain or any other error occurs. This step does not create a scheduled task or restart.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
+$env:PYTHONIOENCODING = 'utf-8'
+$installSource = 'gitee'
+$installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
+$setup = '<SETUP_SCRIPT_READY_ABSOLUTE_PATH>'
+if (-not [IO.Path]::IsPathRooted($setup) -or -not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Downloaded setup not found' }
+$setupItem = Get-Item -LiteralPath $setup -Force
+if ($setupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Invalid downloaded setup' }
 $targetDir = Join-Path $HOME '.workbuddy'
 $restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $restartDir | Out-Null
 try {
-  $setup = Join-Path $restartDir 'setup.py'
-  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
-  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
-  $result = & python3 $setup --source $installSource
+  $result = & python3 -X utf8 -B $setup --source $installSource --verify-only
   $code = $LASTEXITCODE
   $result | Write-Output
   if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
@@ -243,14 +313,15 @@ try {
   Write-Output ('RESTART_PYTHON_READY=' + $pythonExe)
 } finally {
   Remove-Item -LiteralPath $restartDir -Recurse -Force
+  Remove-Item -LiteralPath $setup -Force
 }
 ```
 
-For a failed download, apply "Download mirrors" only to that file and continue the unexecuted steps; do not rerun setup, OAuth, or the entire preparation command. Stop on syntax, configuration, or permission failures. Publish this guide together with the version of `scripts/openagent-workbuddy-restart.py` that supports `--scheduled` to `rel`. If an older script rejects the argument, stop; do not remove it and retry. No separate `scheduler.py` or `.ps1` file is needed. The setup script remains unchanged; Windows does not rely on its `.sh` exclusion. Do not add broad command exclusions, use `ExecutionPolicy Bypass`, or disable security settings.
+At the end of Windows step 2, clean up this run's setup and temporary restart-script downloads. If a download fails, follow "Download mirrors" after the original call has ended: eligible network failures permit one switch to the other official source, performing only the failed download and checks that have not run. Do not rerun OAuth, completed configuration edits, or the entire preparation command. Retrying only a download must not change the already verified plugin source. Continue using the published `--scheduled` entry point below; no additional script is needed.
 
-### Windows: second PowerShell call creates a one-time scheduled task
+### Windows: 3. Schedule restart
 
-Proceed only after the first call succeeds and returns `PLUGIN_READY`, `RESTART_SCRIPT_READY`, and `RESTART_PYTHON_READY`. Replace the three placeholders with the Python and script absolute paths returned by this run and the absolute path of the same message JSON. Escape any single quote in a path as two single quotes inside the PowerShell string (`'` → `''`). The second call must run only:
+Proceed only after Windows step 2 succeeds and returns `PLUGIN_READY`, `RESTART_SCRIPT_READY`, and `RESTART_PYTHON_READY`. Replace the three placeholders with the Python and script absolute paths returned by this run and the absolute path of the same message JSON. Escape any single quote in a path as two single quotes inside the PowerShell string (`'` → `''`). This step must run only:
 
 ```powershell
 & '<RESTART_PYTHON_READY_ABSOLUTE_PATH>' -X utf8 -B '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --scheduled --require-existing-trust --wait-for-turn --message-file '<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>'

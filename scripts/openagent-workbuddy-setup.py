@@ -5,11 +5,13 @@ import argparse
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source', choices=('gitee', 'github'), help='新安装默认 gitee；已有官方来源在未指定时保留')
+parser.add_argument('--verify-only', action='store_true', help='只读核验配置及插件；配置有差异时停止，不写入')
 official_sources = {
     'gitee': {'source': 'git', 'url': 'https://gitee.com/openagent-org/workbuddy-plugin.git', 'ref': 'rel'},
     'github': {'source': 'git', 'url': 'https://github.com/openagent-org/workbuddy-plugin.git', 'ref': 'rel'},
 }
-requested_source = parser.parse_args().source
+args = parser.parse_args()
+requested_source = args.source
 selected_source = official_sources[requested_source or 'gitee']
 
 # settings
@@ -19,6 +21,8 @@ from pathlib import Path
 def write_if_changed(path, data, before, mode):
     if before is not None and data == json.loads(before):
         return False
+    if args.verify_only:
+        raise SystemExit('CONFIG_UPDATE_REQUIRED=' + str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.openagent-', dir=path.parent) as directory:
         temporary = Path(directory) / path.name
@@ -45,24 +49,27 @@ try:
     data.setdefault('enabledPlugins', {})['openagent@openagent-workbuddy'] = True
     mode = path.stat().st_mode & 0o777 if before is not None else 0o600
 
-    project = Path(os.environ['CODEBUDDY_PROJECT_DIR']) if os.environ.get('CODEBUDDY_PROJECT_DIR') else Path.cwd()
-    if not project.is_absolute() or not project.is_dir(): raise SystemExit('当前项目目录无效，停止')
-    project_dir = project / '.codebuddy'
-    local = project_dir / 'settings.local.json'
-    if project_dir.is_symlink() or local.is_symlink(): raise SystemExit('项目配置目录或文件是符号链接，停止')
-    local_before = local.read_bytes() if local.exists() else None
-    local_data = json.loads(local_before) if local_before is not None else {}
-    if not isinstance(local_data, dict): raise SystemExit('项目设置格式错误，停止')
-    sandbox = local_data.setdefault('sandbox', {})
-    if not isinstance(sandbox, dict): raise SystemExit('项目沙箱设置格式错误，停止')
-    excluded = sandbox.setdefault('excludedCommands', [])
-    if not isinstance(excluded, list) or any(not isinstance(item, str) for item in excluded):
-        raise SystemExit('项目排除命令格式错误，停止')
-    if 'openagent-workbuddy-restart.sh' not in excluded:
-        excluded.append('openagent-workbuddy-restart.sh')
-    local_mode = local.stat().st_mode & 0o777 if local_before is not None else 0o600
+    if os.name == 'nt':
+        local_changed = False
+    else:
+        project = Path(os.environ['CODEBUDDY_PROJECT_DIR']) if os.environ.get('CODEBUDDY_PROJECT_DIR') else Path.cwd()
+        if not project.is_absolute() or not project.is_dir(): raise SystemExit('当前项目目录无效，停止')
+        project_dir = project / '.codebuddy'
+        local = project_dir / 'settings.local.json'
+        if project_dir.is_symlink() or local.is_symlink(): raise SystemExit('项目配置目录或文件是符号链接，停止')
+        local_before = local.read_bytes() if local.exists() else None
+        local_data = json.loads(local_before) if local_before is not None else {}
+        if not isinstance(local_data, dict): raise SystemExit('项目设置格式错误，停止')
+        sandbox = local_data.setdefault('sandbox', {})
+        if not isinstance(sandbox, dict): raise SystemExit('项目沙箱设置格式错误，停止')
+        excluded = sandbox.setdefault('excludedCommands', [])
+        if not isinstance(excluded, list) or any(not isinstance(item, str) for item in excluded):
+            raise SystemExit('项目排除命令格式错误，停止')
+        if 'openagent-workbuddy-restart.sh' not in excluded:
+            excluded.append('openagent-workbuddy-restart.sh')
+        local_mode = local.stat().st_mode & 0o777 if local_before is not None else 0o600
 
-    local_changed = write_if_changed(local, local_data, local_before, local_mode)
+        local_changed = write_if_changed(local, local_data, local_before, local_mode)
     changed = write_if_changed(path, data, before, mode)
     print('CONFIG_WRITTEN' if changed or local_changed else 'CONFIG_UNCHANGED')
 except (OSError, ValueError, TypeError, AttributeError):

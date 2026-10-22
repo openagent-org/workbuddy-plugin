@@ -8,6 +8,8 @@
 
 Windows 使用 WorkBuddy 原生 PowerShell 工具。执行 `openagent-workbuddy-exchange.py`、`openagent-workbuddy-setup.py` 和 `openagent-workbuddy-restart.py` 时，每次工具调用设置 `dangerouslyDisableSandbox=true`、`run_in_background=false`、`timeout=120000`（毫秒），申请写入用户安装配置或重启应用所需的沙箱外权限。这些是与 `command` 同级的工具参数，不是 Python 参数，也不使用 Codex 的 `sandbox_permissions`。参数仅提出申请，审批及实际执行方式以宿主结果为准；参数不可用、审批拒绝或超时、仍受沙箱拦截时停止，不关闭安全设置或换入口重试。不先普通执行这些脚本再重放；工具返回未完成任务时只等待原调用。Windows 跳过 macOS 专用 Bash 步骤，使用下方 PowerShell 分支。
 
+Windows 与 macOS 使用相同的下载镜像规则：优先 Gitee，保留已有官方来源；仅网络下载失败时切换另一官方源一次。Windows 使用下方的只读预检和原生编辑流程。发布时须将本指南与配套 `scripts/openagent-workbuddy-setup.py` 一起更新到 `rel`。
+
 ## 用户可见输出
 
 实际执行下列步骤。开始只说“正在安装 OpenAgent…”，浏览器已打开且需要用户授权时只说“请在打开的页面中登录 OpenAgent…”。不重复提醒或逐步播报。
@@ -180,7 +182,7 @@ OpenAgent 已安装，打开新用户引导
 
 ## 自动退出、启动并发送（restart_send）
 
-本节由安装 Agent 执行，仅在 OAuth、MCP 配置、初始化和 `TRUST_VERIFIED` 通过后进行。macOS 的第一次 Bash 更新 settings、核验插件并准备固定名称的重启脚本；只有返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY`，才在第二次 Bash 直接执行脚本。Windows 使用下方两次独立 PowerShell 调用。使用上一节选定的完整启动消息；恢复安装时先检查新任务及消息，已完成或结果未知时不重复收尾，不重复 OAuth 或自动试用业务 Agent。
+本节由安装 Agent 执行，仅在 OAuth、MCP 配置、初始化和 `TRUST_VERIFIED` 通过后进行。macOS 的第一次 Bash 更新 settings、核验插件并准备固定名称的重启脚本；只有返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY`，才在第二次 Bash 直接执行脚本。Windows 先下载 setup，做只读预检和必要的原生配置编辑，再分别进行准备和安排重启的 PowerShell 调用。使用上一节选定的完整启动消息；恢复安装时先检查新任务及消息，已完成或结果未知时不重复收尾，不重复 OAuth 或自动试用业务 Agent。
 
 ### macOS：第一次 Bash 准备线上发布脚本
 
@@ -242,9 +244,13 @@ OpenAgent 已安装，打开新用户引导
 - 已发送或结果未知时先检查是否已有消息并确认是否已提交，不再次粘贴、回车或执行 install。已重启时检查新任务及输入框，不要求再次重启。
 - 自动流程不可用时，按实际状态恢复应用；确认消息未提交后，由用户完全退出、启动 WorkBuddy，新建任务并发送上一节的同一完整消息。已重启则直接检查新任务。
 
-### Windows：第一次 PowerShell 准备线上发布脚本
+### Windows：1. 预检与按需编辑
 
-OAuth、MCP 与 `TRUST_VERIFIED` 均通过后，使用两次独立前台 PowerShell 工具调用，工具参数与原生审批要求沿用文首。先用文件工具创建 UTF-8 JSON `{"message":"完整启动消息"}`，完整保留上一节消息和业务需求；第二次仅传绝对路径，正文不进入参数或日志。第一次执行原 setup，确认 `PLUGIN_READY`，再下载并检查唯一的 Windows 重启脚本；记录脚本和实际 Python 的绝对路径，此时不创建计划任务或重启。
+OAuth、MCP 和 `TRUST_VERIFIED` 通过后，按本节三步执行，沿用文首的原生工具参数和审批要求。
+
+先按“下载镜像”确定本次来源，新安装默认 Gitee，已有官方来源按原规则保留。下面命令以 Gitee 为例；选择 GitHub 时，同时将 `$installSource` 改为 `github`、`$installBase` 改为 `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel`，第 2 步沿用同一选源。然后从所选源下载本次 setup 到唯一临时文件。记录 `SETUP_SCRIPT_READY`，第 2 步仅复用这次下载的同一绝对路径，不使用工作区、本地包或历史脚本。下载、语法检查失败或脚本不支持 `--verify-only` 时停止，不删除参数重试。若预检或后续编辑失败，收尾只清理本次输出路径的 setup 临时文件；清理权限不足则报告残留路径并停止。预期的“待配置”状态保留文件供第 2 步复用。
+
+`--verify-only` 全程只读；Windows 跳过项目配置和 `.sh` 排除项。来源冲突、格式/类型错误、权限拒绝、审批或插件校验超时均停止；不删参数、换工具兜底或放宽安全设置。以下“待配置”标记是唯一允许进入编辑的预期状态。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -253,14 +259,76 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $env:PYTHONIOENCODING = 'utf-8'
 $installSource = 'gitee'
 $installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
+$setup = Join-Path ([IO.Path]::GetTempPath()) ('openagent-setup-' + [guid]::NewGuid().ToString('N') + '.py')
+try {
+  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
+  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
+  & python3 -X utf8 -B -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $setup
+  if ($LASTEXITCODE -ne 0) { throw 'Setup syntax check failed' }
+} catch {
+  Remove-Item -LiteralPath $setup -Force -ErrorAction SilentlyContinue
+  throw
+}
+Write-Output ('SETUP_SCRIPT_READY=' + $setup)
+& python3 -X utf8 -B $setup --source $installSource --verify-only
+$checkCode = $LASTEXITCODE
+Write-Output ('SETUP_CHECK_EXIT=' + $checkCode)
+```
+
+按 `SETUP_CHECK_EXIT` 和实际输出共同判定，不能使用最后 `Write-Output` 的外层退出码：
+
+| 预检结果 | 下一步 |
+| --- | --- |
+| `0` 且有 `PLUGIN_READY` | 跳过编辑，进入第 2 步。 |
+| `1` 且脚本仅报告 `CONFIG_UPDATE_REQUIRED=<当前用户 .workbuddy/settings.json 绝对路径>` | 这是配置待修改；宿主也未报告任何拒绝、审批失败或其他异常时，才允许下面的编辑。 |
+| 其他结果 | 停止，不把普通失败当成待配置。 |
+
+需要编辑时，使用 WorkBuddy 原生 Read/Edit 和正常审批，只合并下列目标字段。JSON 以 Gitee 为例；本次选择 GitHub 时，将 `source.url` 改为 `https://github.com/openagent-org/workbuddy-plugin.git`，与预检的 `$installSource` 保持一致：
+
+- 先按预检给出的路径读取相关字段，重新检查来源。只接受同名市场缺失、Gitee/GitHub 官方 git 来源（`ref=rel`）或本指南的旧官网迁移；未知来源、结构错误、重复键或无法唯一定位时停止。
+- 已有文件只用 Edit，保留其他插件、市场及 `openagent-workbuddy` 对象的其他字段。示例 JSON 是合并目标，不能用来覆盖整份文件。
+- 标记不代表文件不存在。只有原生 Read/文件元信息明确确认不存在（不是无权读取），且写前仍不存在，才可用原生 Write 创建示例中的最小 JSON；文件已出现就停止，不覆盖。
+- 只改这两个目标，不改 MCP、信任、沙箱开关或项目配置，不输出整份 settings 或凭据。编辑匹配失败、权限拒绝或审批失败即停止，不用 shell/Python 兜底，也不循环编辑。
+
+```json
+{
+  "enabledPlugins": {
+    "openagent@openagent-workbuddy": true
+  },
+  "extraKnownMarketplaces": {
+    "openagent-workbuddy": {
+      "source": {
+        "source": "git",
+        "url": "https://gitee.com/openagent-org/workbuddy-plugin.git",
+        "ref": "rel"
+      }
+    }
+  }
+}
+```
+
+### Windows：2. 核验插件并准备重启脚本
+
+完成第 1 步后，先用文件工具创建 UTF-8 JSON `{"message":"完整启动消息"}`，完整保留前文选定的启动语和业务需求；后续只传文件绝对路径，正文不进入参数或日志。
+
+将 `<SETUP_SCRIPT_READY_ABSOLUTE_PATH>` 替换为第 1 步输出的 setup 绝对路径，单引号写成两个单引号。下方复用它做编辑后的只读核验；第 2 步的 `$installSource` 和 `$installBase` 沿用第 1 步选源，不重置为默认值。只有 `PLUGIN_READY` 通过，才从所选源下载重启脚本并记录脚本、Python 路径。仍有差异或其他错误就停止，此步不创建计划任务或重启。
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
+$env:PYTHONIOENCODING = 'utf-8'
+$installSource = 'gitee'
+$installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
+$setup = '<SETUP_SCRIPT_READY_ABSOLUTE_PATH>'
+if (-not [IO.Path]::IsPathRooted($setup) -or -not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'Downloaded setup not found' }
+$setupItem = Get-Item -LiteralPath $setup -Force
+if ($setupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Invalid downloaded setup' }
 $targetDir = Join-Path $HOME '.workbuddy'
 $restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $restartDir | Out-Null
 try {
-  $setup = Join-Path $restartDir 'setup.py'
-  curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
-  if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
-  $result = & python3 $setup --source $installSource
+  $result = & python3 -X utf8 -B $setup --source $installSource --verify-only
   $code = $LASTEXITCODE
   $result | Write-Output
   if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
@@ -283,14 +351,15 @@ try {
   Write-Output ('RESTART_PYTHON_READY=' + $pythonExe)
 } finally {
   Remove-Item -LiteralPath $restartDir -Recurse -Force
+  Remove-Item -LiteralPath $setup -Force
 }
 ```
 
-下载失败沿用“下载镜像”：只补失败下载和未执行步骤，不重复 setup、OAuth 或整个准备命令；语法、配置或权限失败停止。本指南与支持 `--scheduled` 的 `scripts/openagent-workbuddy-restart.py` 须配套发布到 rel；旧脚本不识别参数时停止，不删除参数重试。无需额外的 scheduler.py 或 .ps1 文件。setup 本身不变，Windows 不依赖其 `.sh` 排除项；不新增宽泛命令排除、不使用 `ExecutionPolicy Bypass` 或关闭安全设置。
+第 2 步结束时清理本次 setup 和重启脚本的临时下载。网络下载失败且原调用已结束后，按“下载镜像”切换另一官方源一次，只补失败下载和未执行的检查，不重跑 OAuth、已完成的配置编辑或整个准备命令。仅补下载不改已确认的插件来源。继续使用下方已发布的 `--scheduled` 入口，无需新增脚本。
 
-### Windows：第二次 PowerShell 安排一次性计划任务
+### Windows：3. 安排重启
 
-仅首次成功返回 `PLUGIN_READY`、`RESTART_SCRIPT_READY` 和 `RESTART_PYTHON_READY` 后执行；将三个占位符替换为本次输出的 Python、脚本及同一消息 JSON 的绝对路径。路径中的单引号须在 PowerShell 字符串内写成两个单引号（`'` → `''`）。第二次只执行此命令：
+仅第 2 步成功返回 `PLUGIN_READY`、`RESTART_SCRIPT_READY` 和 `RESTART_PYTHON_READY` 后执行；将三个占位符替换为本次输出的 Python、脚本及同一消息 JSON 的绝对路径。路径中的单引号须在 PowerShell 字符串内写成两个单引号（`'` → `''`）。本步骤只执行此命令：
 
 ```powershell
 & '<RESTART_PYTHON_READY_ABSOLUTE_PATH>' -X utf8 -B '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --scheduled --require-existing-trust --wait-for-turn --message-file '<完整启动消息JSON绝对路径>'

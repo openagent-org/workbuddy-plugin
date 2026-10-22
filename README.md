@@ -12,7 +12,7 @@ Use the official installation guide in WorkBuddy:
 
 Installation requires Git and Python 3.9+. File uploads require Node.js 20+; the COS SDK is bundled with the plugin.
 
-The `rel` branch contains the installation files. New installations prefer the official Gitee mirror, with one GitHub fallback for network failures. Existing official sources can be retained. Follow the guide to authorize the MCP connection, install the Skills, and verify them in a new WorkBuddy task. Existing installations use the same guide for updates.
+The `rel` branch contains the installation files. New installations prefer the official Gitee mirror, with one GitHub fallback for network failures. Existing official sources can be retained. On Windows, the guide uses read-only setup checks and native file editing to configure the plugin. Follow the guide to authorize the MCP connection, install the Skills, and verify them in a new WorkBuddy task. Existing installations use the same guide for updates.
 
 ## Uninstall
 
