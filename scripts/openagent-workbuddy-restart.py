@@ -113,8 +113,10 @@ def _toolhelp_entries():
         if not k32.Process32FirstW(snapshot, ctypes.byref(entry)):
             raise RestartError('PROCESS_SNAPSHOT_FAILED')
         while True:
-            entries.append((int(entry.th32ProcessID), entry.szExeFile,
-                            int(entry.th32ParentProcessID)))
+            # 忽略仍留在快照中的零线程记录，避免误判多个实例或退出失败。
+            if entry.cntThreads > 0:
+                entries.append((int(entry.th32ProcessID), entry.szExeFile,
+                                int(entry.th32ParentProcessID)))
             if not k32.Process32NextW(snapshot, ctypes.byref(entry)):
                 break
     finally:
