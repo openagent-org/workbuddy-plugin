@@ -180,7 +180,7 @@ OpenAgent 已安装，打开新用户引导
 
 ## 自动退出、启动并发送（restart_send）
 
-本节由安装 Agent 执行，仅在 OAuth、MCP 配置、初始化和 `TRUST_VERIFIED` 通过后进行。第一次 Bash 更新 settings、核验插件并准备固定名称的重启脚本；只有返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY`，才在第二次 Bash 直接执行脚本。使用上一节选定的完整启动消息；恢复安装时先检查新任务及消息，已完成或结果未知时不重复收尾，不重复 OAuth 或自动试用业务 Agent。
+本节由安装 Agent 执行，仅在 OAuth、MCP 配置、初始化和 `TRUST_VERIFIED` 通过后进行。macOS 的第一次 Bash 更新 settings、核验插件并准备固定名称的重启脚本；只有返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY`，才在第二次 Bash 直接执行脚本。Windows 使用下方两次独立 PowerShell 调用。使用上一节选定的完整启动消息；恢复安装时先检查新任务及消息，已完成或结果未知时不重复收尾，不重复 OAuth 或自动试用业务 Agent。
 
 ### macOS：第一次 Bash 准备线上发布脚本
 
@@ -244,11 +244,13 @@ OpenAgent 已安装，打开新用户引导
 
 ### Windows：第一次 PowerShell 准备线上发布脚本
 
-OAuth、MCP 与 `TRUST_VERIFIED` 均通过后，使用两次独立前台 PowerShell 工具调用；每次均按文首设置 `dangerouslyDisableSandbox=true` 申请原生审批。先用文件工具创建 UTF-8 JSON `{"message":"完整启动消息"}`，完整保留上一节消息和业务需求；第二次仅传绝对文件路径，正文不进入参数或日志。下方从 rel 下载并执行原 setup，确认 `PLUGIN_READY` 后，只下载 Windows Python 重启脚本；语法检查通过后保存到当前用户的 `~/.workbuddy`，此时不执行重启。
+OAuth、MCP 与 `TRUST_VERIFIED` 均通过后，使用两次独立前台 PowerShell 工具调用，工具参数与原生审批要求沿用文首。先用文件工具创建 UTF-8 JSON `{"message":"完整启动消息"}`，完整保留上一节消息和业务需求；第二次仅传绝对路径，正文不进入参数或日志。第一次执行原 setup，确认 `PLUGIN_READY`，再下载并检查唯一的 Windows 重启脚本；记录脚本和实际 Python 的绝对路径，此时不创建计划任务或重启。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
+$env:PYTHONIOENCODING = 'utf-8'
 $installSource = 'gitee'
 $installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
 $targetDir = Join-Path $HOME '.workbuddy'
@@ -262,10 +264,14 @@ try {
   $code = $LASTEXITCODE
   $result | Write-Output
   if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
+  $pythonOutput = @(& python3 -c "import sys; assert sys.version_info >= (3,9); print(sys.executable)")
+  if ($LASTEXITCODE -ne 0 -or $pythonOutput.Count -ne 1) { throw 'Python resolution failed' }
+  $pythonExe = $pythonOutput[0].Trim()
+  if (-not [IO.Path]::IsPathRooted($pythonExe) -or -not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'Invalid Python executable' }
   $download = Join-Path $restartDir 'openagent-workbuddy-restart.py'
   curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-restart.py" -o $download
   if ($LASTEXITCODE -ne 0) { throw 'Restart script download failed' }
-  & python3 -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
+  & $pythonExe -B -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
   if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed' }
   $destination = Join-Path $targetDir 'openagent-workbuddy-restart.py'
   if (Test-Path -LiteralPath $destination) {
@@ -274,22 +280,27 @@ try {
   }
   Move-Item -LiteralPath $download -Destination $destination -Force
   Write-Output ('RESTART_SCRIPT_READY=' + $destination)
+  Write-Output ('RESTART_PYTHON_READY=' + $pythonExe)
 } finally {
   Remove-Item -LiteralPath $restartDir -Recurse -Force
 }
 ```
 
-下载失败沿用“下载镜像”：只补失败下载和未执行步骤，保留已保存的重启脚本，不重复 setup、OAuth 或整个准备命令；语法、配置或权限失败停止。setup 本身不变，Windows 不依赖它写入的 `.sh` 排除项；不新增 `python`、`python3` 或 `powershell` 等宽泛排除，不使用 `ExecutionPolicy Bypass`、关闭安全设置或其他审批绕过。需要原生授权时按宿主流程处理，拒绝则停止。
+下载失败沿用“下载镜像”：只补失败下载和未执行步骤，不重复 setup、OAuth 或整个准备命令；语法、配置或权限失败停止。本指南与支持 `--scheduled` 的 `scripts/openagent-workbuddy-restart.py` 须配套发布到 rel；旧脚本不识别参数时停止，不删除参数重试。无需额外的 scheduler.py 或 .ps1 文件。setup 本身不变，Windows 不依赖其 `.sh` 排除项；不新增宽泛命令排除、不使用 `ExecutionPolicy Bypass` 或关闭安全设置。
 
-### Windows：第二次 PowerShell 直接安排重启
+### Windows：第二次 PowerShell 安排一次性计划任务
 
-仅首次返回 `PLUGIN_READY` 和 `RESTART_SCRIPT_READY` 后执行；使用准备阶段已验证的 Python 3.9+，替换两个绝对路径，第二次只执行此命令：
+仅首次成功返回 `PLUGIN_READY`、`RESTART_SCRIPT_READY` 和 `RESTART_PYTHON_READY` 后执行；将三个占位符替换为本次输出的 Python、脚本及同一消息 JSON 的绝对路径。路径中的单引号须在 PowerShell 字符串内写成两个单引号（`'` → `''`）。第二次只执行此命令：
 
 ```powershell
-python3 '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --require-existing-trust --wait-for-turn --message-file '<完整启动消息JSON绝对路径>'
+& '<RESTART_PYTHON_READY_ABSOLUTE_PATH>' -X utf8 -B '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --scheduled --require-existing-trust --wait-for-turn --message-file '<完整启动消息JSON绝对路径>'
 ```
 
-`--wait-for-turn` 必须取得当前 `CODEBUDDY_SESSION_ID`，缺失停止，不退回立即重启；后台等当前任务 `completed` 后才退出旧实例。后台必须脱离宿主 Job，失败停止，不退回普通分离启动；这不保证消除其他命令沙箱限制，仍须原生授权。应用路径从实际运行进程取得，不写死用户目录或安装盘。重启后通过 CDP 发送一次完整消息；启用 API 不可用时，只有明确本地配置未禁用才尝试发送，连接与所需工具仍由新任务验证。Windows 自动退出及发送未验证：离线检查只证明语法及受测逻辑，不代表真杀进程、真启动或注入已经实机通过。沿用上方验收与失败处理，结果未知不补发。
+`--scheduled` 由脚本使用当前用户 `Interactive`、`Limited` 权限的一次性按需计划任务，启动同一脚本的 worker；无周期触发器或自动重试。优先使用同目录 `pythonw.exe`，缺失时使用 `python.exe`，可能显示控制台；两者均由任务计划程序托管，无需旧宿主允许 `CREATE_BREAKAWAY_FROM_JOB`。文件和计划任务访问仍须正常授权，拒绝或超时即停止。
+
+`--wait-for-turn` 绑定当前 `CODEBUDDY_SESSION_ID`，缺失或只读任务数据库不可用时停止。入口确认 worker 就绪并完成 ready/armed 握手后，输出 `TASK_NAME`、`SCHEDULED_WORKER_PID`、`RESULT_PATH` 并返回。安装 Agent 随即按“完成报告”结束本轮回复，不轮询等待；worker 等当前任务 `completed`、确认无其他活跃任务后才关闭旧实例。等待失败、实例变化或握手失败均不执行重启。
+
+应用路径从实际运行进程取得，不写死用户目录或安装盘；重启后沿用 CDP 流程发送一次完整消息。启用 API 不可用时，只有明确本地配置未禁用才尝试发送；连接与所需工具仍由新任务验证。worker 清理本次计划任务及请求，保留日志和 `RESULT_PATH` 结果。沿用上方验收与失败处理：握手成功仅表示已安排；已发送、已重启或结果未知时先检查本次结果和新任务，不重新安排或补发。
 
 ## 新任务排障
 
@@ -301,7 +312,7 @@ Windows PowerShell：使用 `curl.exe`，先设置 `$OutputEncoding = [System.Te
 
 仅 OAuth、MCP 合并与初始化、信任回读通过，且 plugin_verify 返回 `PLUGIN_READY` 确认下载并启用后，才报告配置完成；未知或前置失败用未完成模板。工具在重启后新任务核验，不能将配置完成报告成宿主已加载；自动收尾失败区分配置和发送状态。
 
-安装配置完成且对应平台脚本返回独立 Python 后台创建日志时，最终回复必须且只能输出以下两行纯文本，两行之间不留空行：
+安装配置完成后，macOS 仍以原脚本返回独立 Python 后台创建日志为已安排条件；Windows 以命令成功返回 `TASK_NAME`、`SCHEDULED_WORKER_PID` 和 `RESULT_PATH`（ready/armed 已完成）为已安排条件。满足对应平台条件时，最终回复必须且只能输出以下两行纯文本，两行之间不留空行：
 
 ```text
 OpenAgent 安装配置已完成。

@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""WorkBuddy 独立 Python 后台（Windows 版）：等待完成、退出、直接调试启动及 CDP 发送。
+"""WorkBuddy Python 重启核心（Windows）：等待完成、退出、调试启动及单次 CDP 发送。
 
 对应 macOS 的 openagent-workbuddy-restart.sh，语义保持一致：
   核验信任 → 等待当前任务 completed → 强制退出 → 带调试端口重启 → CDP 发送一次消息。
 
-Windows 使用 Toolhelp 快照、taskkill 及脱离 Job 的后台进程。
+Windows 使用 Toolhelp 快照和 taskkill。普通入口要求 Windows 允许后台分离；
+显式 --scheduled 入口准备请求，由本文件的 scheduled worker 接管并等待 arming。
 CDP 启用与导航按宿主实际能力检查，结果未知时不补发。
+普通入口若被拒绝 CREATE_BREAKAWAY_FROM_JOB，可使用显式授权的计划任务入口或独立 PowerShell；
+普通 detached 不保证活过 WorkBuddy CLI 的退出，因此不自动降级。
 
 用法：
+  python3 -X utf8 openagent-workbuddy-restart.py install --scheduled --require-existing-trust \
+      --wait-for-turn --message-file <请求JSON>  # 显式授权的计划任务入口
   python3 openagent-workbuddy-restart.py install --require-existing-trust \
       --wait-for-turn --message-file <请求JSON>
   python3 openagent-workbuddy-restart.py --self-check     # 只读体检
   python3 openagent-workbuddy-restart.py --dry-run ...    # 演练，不杀进程不重启
-  python3 openagent-workbuddy-restart.py --worker         # 后台角色（由 install 拉起）
+  python3 openagent-workbuddy-restart.py --worker         # 原后台角色（由 install 拉起）
+  python3 openagent-workbuddy-restart.py --scheduled-worker <TASKNAME>  # 内部任务角色
 """
 
 import argparse
@@ -28,7 +34,9 @@ import subprocess
 import sys
 import time
 import urllib.request
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
+import uuid
 from pathlib import Path
 
 IS_WINDOWS = os.name == 'nt'
@@ -50,6 +58,19 @@ class RestartError(Exception):
 def log(message):
     line = time.strftime('%Y-%m-%d %H:%M:%S') + ' [install] ' + message
     print(line, flush=True)
+
+
+def operation_error(stage, error, flags=None):
+    """记录失败阶段和系统错误码，不记录请求消息或凭据。"""
+    detail = 'stage=%s error=%s errno=%s winerror=%s' % (
+        stage, type(error).__name__, getattr(error, 'errno', None),
+        getattr(error, 'winerror', None))
+    filename = getattr(error, 'filename', None)
+    if filename is not None:
+        detail += ' file=%s' % filename
+    if flags is not None:
+        detail += ' flags=0x%08x' % flags
+    return detail
 
 
 # ---------------------------------------------------------------- 进程管理（Windows）
@@ -172,7 +193,8 @@ def quit_app(dry_run=False):
         for pid in app_pids():
             try:
                 subprocess.run(['taskkill', '/F', '/PID', str(pid)],
-                               capture_output=True, timeout=15)
+                               capture_output=True, timeout=15,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             except (OSError, subprocess.SubprocessError):
                 pass
         for _ in range(16):
@@ -266,8 +288,21 @@ def verify_enabled_config():
 
 
 def write_private(path, text):
-    """请求保存在当前用户目录，沿用该目录的 Windows ACL。"""
-    path.write_text(text, encoding='utf-8')
+    """独占创建请求，避免重复调用覆盖仍在处理的消息。"""
+    with path.open('x', encoding='utf-8') as output:
+        output.write(text)
+
+
+def remove_scheduled_request(task_name):
+    """Only remove the request belonging to this scheduled invocation."""
+    try:
+        request = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        return False
+    if isinstance(request, dict) and request.get('scheduled_task') == task_name:
+        REQUEST.unlink()
+        return True
+    return False
 
 
 # ---------------------------------------------------------------- CDP
@@ -434,8 +469,15 @@ ENABLE_JS = r'''(async()=>{
         receiver=c;method=c.setEnabled;out.enable='connectors.setEnabled';
     }
     if(method){
-        const result=await method.call(receiver,"openagent",true);
-        if(result===false||result?.ok===false||result?.success===false)throw new Error('MCP_ENABLE_REJECTED');
+        try{
+            const result=await method.call(receiver,"openagent",true);
+            if(result===false||result?.ok===false||result?.success===false)throw new Error('MCP_ENABLE_REJECTED');
+        }catch(error){
+            const text=String(error?.message??error);
+            const missing=/no handler (?:registered for|for channel:)\s*['"]?(?:wb:)?(?:connectors:setCustomMcpServerEnabled|mcp:setEnabled|connectors:setEnabled)\b/i.test(text);
+            if(!missing)throw error;
+            out.enable='unavailable';
+        }
     }
     if(typeof wb.navigation?.goto==='function'){
         await wb.navigation.goto({tab:"home"});out.goto='ok';
@@ -532,10 +574,12 @@ def send_message(request):
 
 
 def worker():
-    """确认不属于宿主 Job 后才退出旧应用，异常清理请求正文。"""
+    """核验目标实例后重启；外层 Job 成员关系不等于分离失败。"""
+    request = None
     try:
-        if in_job():
-            raise RestartError('WORKER_STILL_IN_JOB')
+        # CREATE_BREAKAWAY_FROM_JOB 已由 Windows 在创建时校验。嵌套 Job
+        # 中允许脱离内层后仍留在外层，不能把任意 Job 成员关系当作失败。
+        log('后台 Job 成员=%s' % in_job())
         request = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
         log('Python 后台开始 PID=%d' % os.getpid())
         wait_for_turn(request)
@@ -556,8 +600,17 @@ def worker():
         sys.exit(0 if ok else 1)
     finally:
         try:
-            REQUEST.unlink()
-        except OSError:
+            if isinstance(request, dict) and request.get('scheduled_task'):
+                remove_scheduled_request(request['scheduled_task'])
+            else:
+                # Legacy workers must not remove a scheduled request they never read.
+                try:
+                    current = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
+                except (OSError, ValueError):
+                    current = {}
+                if not isinstance(current, dict) or not current.get('scheduled_task'):
+                    REQUEST.unlink()
+        except (OSError, ValueError):
             pass
 
 
@@ -609,6 +662,10 @@ def self_check():
 
 
 def launch(args):
+    scheduled_task = getattr(args, 'prepare_scheduled', None)
+    if scheduled_task is not None and (not isinstance(scheduled_task, str) or
+            not re.fullmatch(r'OpenAgent-Restart-[0-9a-f]{32}', scheduled_task)):
+        raise RestartError('SCHEDULED_TASK_NAME_INVALID')
     if not args.require_existing_trust and not (args.dry_run or args.self_check):
         raise RestartError('EXISTING_TRUST_PROTOCOL_REQUIRED')
     if args.message_file is not None:
@@ -653,29 +710,410 @@ def launch(args):
     for directory in (CONFIG, LOG.parent):
         if not directory.is_dir():
             directory.mkdir(parents=True, exist_ok=True)
-    write_private(REQUEST, json.dumps({
-        'message': message,
-        'session_id': session_id,
-        'old_pid': old_pid,
-        'executable': str(executable),
-    }, ensure_ascii=False))
-
+    request = {
+            'message': message,
+            'session_id': session_id,
+            'old_pid': old_pid,
+            'executable': str(executable),
+        }
+    if scheduled_task:
+        request['scheduled_task'] = scheduled_task
+        if getattr(args, 'scheduled_python', None):
+            request['scheduled_python'] = args.scheduled_python
     try:
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        write_private(REQUEST, json.dumps(request, ensure_ascii=False))
+    except FileExistsError:
+        raise RestartError('REQUEST_ALREADY_EXISTS: 已有重启请求，请核对原后台和发送结果，不重复安排') from None
+    except OSError as error:
+        raise RestartError(operation_error('write_request', error)) from error
+
+    if scheduled_task:
+        run_directory = CONFIG / 'restart-runs' / scheduled_task
+        try:
+            run_directory.mkdir(parents=True, exist_ok=False)
+        except OSError as error:
+            try:
+                remove_scheduled_request(scheduled_task)
+            except (OSError, ValueError) as cleanup_error:
+                log(operation_error('cleanup_request', cleanup_error))
+            raise RestartError(operation_error('prepare_run', error)) from error
+        log('SCHEDULED_REQUEST_READY=' + scheduled_task)
+        log('SCHEDULED_RUN_DIR=' + str(run_directory))
+        return
+
+    stage = 'check_job'
+    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
         if in_job():
             flags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB，拒绝时不降级重试。
+        log('后台创建参数 flags=0x%08x' % flags)
+        stage = 'open_log'
         with open(LOG, 'a', encoding='utf-8') as output:
+            stage = 'spawn_worker'
             child = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), '--worker'],
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                 cwd=str(Path.home()), close_fds=True, creationflags=flags,
             )
-    except Exception:
-        REQUEST.unlink(missing_ok=True)
-        raise
+    except Exception as error:
+        try:
+            REQUEST.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            log(operation_error('cleanup_request', cleanup_error))
+        if isinstance(error, RestartError):
+            raise
+        if stage == 'spawn_worker' and flags & 0x01000000 and getattr(error, 'winerror', None) == 5:
+            raise RestartError(
+                'WORKER_BREAKAWAY_DENIED: 脱离宿主 Job 的后台启动请求被拒绝；'
+                '普通后台进程可能在关闭 WorkBuddy 时被一起结束，未降级重试。'
+                '请在独立 PowerShell / 终端中运行本脚本。' + operation_error(stage, error, flags)
+            ) from error
+        raise RestartError(operation_error(stage, error, flags)) from error
     log('已创建独立 Python 后台 PID=%d（尚未验证存活或重启）' % child.pid)
     log('全程日志：%s' % LOG)
     log('当前任务完成后由后台重启；请结束当前回复' if session_id else '后台将直接重启')
+
+
+
+TASK_PATTERN = r'OpenAgent-Restart-[0-9a-f]{32}'
+
+
+# Fixed code only: data arrives as UTF-8 JSON on stdin, never as executable text.
+# Keep native ScheduledTasks and host authorization; do not change execution policy.
+TASK_POWERSHELL = r'''
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    if ($p.task_name -notmatch '^OpenAgent-Restart-[0-9a-f]{32}$') { throw 'INVALID_RESTART_TASK_NAME' }
+    if (-not [IO.Path]::IsPathRooted($p.script_path) -or -not [IO.Path]::IsPathRooted($p.python_executable)) { throw 'ABSOLUTE_ACTION_PATH_REQUIRED' }
+    $arguments = '-B "' + $p.script_path + '" --scheduled-worker "' + $p.task_name + '"'
+    function Get-OwnRestartTask {
+        try {
+            Get-ScheduledTask -TaskName $p.task_name -TaskPath '\' -ErrorAction Stop
+        } catch {
+            if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound,Get-ScheduledTask') { throw }
+        }
+    }
+    if ($p.operation -eq 'register') {
+        if (-not (Test-Path -LiteralPath $p.script_path -PathType Leaf) -or -not (Test-Path -LiteralPath $p.python_executable -PathType Leaf)) { throw 'ACTION_FILE_MISSING' }
+        $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+        $action = New-ScheduledTaskAction -Execute $p.python_executable -Argument $arguments -WorkingDirectory $env:USERPROFILE
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([timespan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $null = Register-ScheduledTask -TaskName $p.task_name -TaskPath '\' -Action $action -Principal $principal -Settings $settings -Description 'OpenAgent one-shot WorkBuddy restart and single guide message; current interactive user only.' -ErrorAction Stop
+        Start-ScheduledTask -TaskName $p.task_name -TaskPath '\' -ErrorAction Stop
+        $answer = @{task_name=$p.task_name; registered_started=$true}
+    } elseif ($p.operation -eq 'validate_ready') {
+        $process = Get-Process -Id ([int]$p.worker_pid) -ErrorAction Stop
+        if ([IO.Path]::GetFullPath($process.Path) -ne [IO.Path]::GetFullPath($p.python_executable)) { throw 'SCHEDULED_WORKER_PROCESS_MISMATCH' }
+        $answer = @{task_name=$p.task_name; worker_pid=[int]$process.Id; process_verified=$true}
+    } elseif ($p.operation -eq 'remove') {
+        $matching = @(Get-OwnRestartTask)
+        if ($matching.Count -gt 0) {
+            if ($matching.Count -ne 1 -or $matching[0].TaskName -ne $p.task_name -or $matching[0].TaskPath -ne '\' -or @($matching[0].Actions).Count -ne 1 -or $matching[0].Actions[0].Execute -ne $p.python_executable -or $matching[0].Actions[0].Arguments -ne $arguments) { throw 'RESTART_TASK_DEFINITION_MISMATCH' }
+            # Remove the definition only; never Stop-ScheduledTask or stop its process.
+            Unregister-ScheduledTask -TaskName $p.task_name -TaskPath '\' -Confirm:$false -ErrorAction Stop
+        }
+        $remaining = @(Get-OwnRestartTask)
+        if ($remaining.Count -ne 0) { throw 'RESTART_TASK_CLEANUP_UNCONFIRMED' }
+        $answer = @{task_name=$p.task_name; cleanup='confirmed_deleted'}
+    } else { throw 'INVALID_TASK_OPERATION' }
+    [Console]::WriteLine(($answer | ConvertTo-Json -Compress))
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+'''
+
+
+def same_executable(left, right):
+    return os.path.normcase(str(Path(left).resolve())) == os.path.normcase(str(Path(right).resolve()))
+
+
+def scheduled_python():
+    executable = Path(sys.executable).resolve()
+    windowless = executable.with_name('pythonw.exe')
+    if windowless.is_file():
+        return windowless.resolve()
+    if not executable.is_file():
+        raise RestartError('SCHEDULED_PYTHON_MISSING')
+    return executable
+
+
+def task_payload(task_name, executable=None):
+    if not isinstance(task_name, str) or not re.fullmatch(TASK_PATTERN, task_name):
+        raise ValueError('SCHEDULED_TASK_NAME_INVALID')
+    return {'task_name': task_name, 'script_path': str(Path(__file__).resolve()),
+            'python_executable': str(Path(executable or sys.executable).resolve())}
+
+
+def task_operation(operation, payload):
+    if operation not in ('register', 'validate_ready', 'remove'):
+        raise ValueError('INVALID_TASK_OPERATION')
+    if not re.fullmatch(TASK_PATTERN, payload.get('task_name', '')):
+        raise ValueError('SCHEDULED_TASK_NAME_INVALID')
+    data = dict(payload, operation=operation)
+    powershell = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    outcome = subprocess.run(
+        [str(powershell), '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', TASK_POWERSHELL],
+        input=json.dumps(data, ensure_ascii=False), capture_output=True,
+        encoding='utf-8', errors='replace', timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    if outcome.returncode != 0:
+        raise RestartError('TASK_%s_FAILED' % operation.upper())
+    result = json.loads(outcome.stdout.lstrip('\ufeff'))
+    if not isinstance(result, dict) or result.get('task_name') != payload['task_name']:
+        raise RestartError('TASK_OPERATION_RESULT_MISMATCH')
+    return result
+
+
+def cleanup_task(task_name, executable=None):
+    result = task_operation('remove', task_payload(task_name, executable))
+    if result.get('cleanup') != 'confirmed_deleted':
+        raise RestartError('TASK_CLEANUP_NOT_CONFIRMED')
+    return {'task_name': task_name, 'cleanup': 'confirmed_deleted'}
+
+
+def arm_scheduled_worker(run_directory, task_name):
+    temporary = run_directory / ('armed-%s.tmp' % uuid.uuid4().hex)
+    try:
+        with temporary.open('x', encoding='utf-8') as output:
+            json.dump({'task_name': task_name}, output)
+        # On Windows rename fails if armed.json already exists; never overwrite it.
+        os.rename(temporary, run_directory / 'armed.json')
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def launch_scheduled(args, ready_timeout=30):
+    if os.environ.get('CODEBUDDY_SESSION_ID') and not args.wait_for_turn:
+        raise RestartError('WORKBUDDY_CONTEXT_REQUIRES_WAIT_FOR_TURN')
+    if getattr(args, 'prepare_scheduled', None):
+        raise RestartError('SCHEDULED_OPTIONS_CONFLICT')
+    executable = scheduled_python()
+    name = 'OpenAgent-Restart-' + uuid.uuid4().hex
+    prepared = argparse.Namespace(**vars(args))
+    prepared.prepare_scheduled = name
+    prepared.scheduled_python = str(executable)
+    # Existing trust, turn, app-path and exclusive request checks remain authoritative.
+    launch(prepared)
+    run_directory = CONFIG / 'restart-runs' / name
+    payload = task_payload(name, executable)
+    armed = False
+    registration_attempted = False
+    stage = 'validate_prepared_request'
+    try:
+        request = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
+        if request.get('scheduled_task') != name:
+            raise RestartError('PREPARED_REQUEST_MISMATCH')
+        stage = 'register_task'
+        registration_attempted = True
+        registered = task_operation('register', payload)
+        if registered.get('registered_started') is not True:
+            raise RestartError('TASK_START_NOT_CONFIRMED')
+        stage = 'wait_ready'
+        deadline = time.monotonic() + max(0, min(30, ready_timeout))
+        ready = None
+        while time.monotonic() < deadline:
+            ready_path = run_directory / 'ready.json'
+            if ready_path.is_file():
+                ready = json.loads(ready_path.read_text(encoding='utf-8-sig'))
+                break
+            time.sleep(.2)
+        if (not isinstance(ready, dict) or ready.get('task_name') != name or
+                type(ready.get('pid')) is not int or ready['pid'] <= 0 or
+                not same_executable(ready.get('python_executable', ''), executable)):
+            raise RestartError('SCHEDULED_WORKER_READY_NOT_CONFIRMED')
+        stage = 'verify_ready_process'
+        verified = task_operation('validate_ready', dict(payload, worker_pid=ready['pid']))
+        if verified.get('process_verified') is not True or verified.get('worker_pid') != ready['pid']:
+            raise RestartError('SCHEDULED_WORKER_PROCESS_MISMATCH')
+        stage = 'arming'
+        arm_scheduled_worker(run_directory, name)
+        armed = True
+        log('TASK_NAME=' + name)
+        log('SCHEDULED_WORKER_PID=' + str(ready['pid']))
+        log('RESULT_PATH=' + str(run_directory / 'result.json'))
+        log('Worker is ready and armed. End this WorkBuddy reply; the worker waits for completed before restarting.')
+    except Exception as error:
+        # A committed/uncertain arm is never rolled back or automatically replayed.
+        armed = armed or (run_directory / 'armed.json').exists()
+        cleanup = {'cleanup': 'skipped_armed' if armed else 'not_registered'}
+        if not armed:
+            if registration_attempted:
+                try:
+                    cleanup = cleanup_task(name, executable)
+                except Exception as cleanup_error:
+                    cleanup = {'cleanup': 'failed', 'error': error_info(cleanup_error)}
+                    log('TASK_CLEANUP_UNCONFIRMED')
+            try:
+                remove_scheduled_request(name)
+            except Exception as cleanup_error:
+                log(operation_error('cleanup_request', cleanup_error))
+        try:
+            write_json(run_directory / 'launch-result.json', {'task_name': name, 'at': utc_now(),
+                'stage': stage, 'armed': armed, 'error': error_info(error), 'cleanup': cleanup})
+        except OSError:
+            log('LAUNCH_AUDIT_UNCONFIRMED')
+        raise
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+
+
+def write_json(path, data):
+    temporary = path.with_name(path.name + '.%d.tmp' % os.getpid())
+    with temporary.open('x', encoding='utf-8') as output:
+        json.dump(data, output, ensure_ascii=False)
+    os.replace(temporary, path)
+
+
+def error_info(error):
+    # Arbitrary exception text can contain request text or credentials.
+    result = {'type': type(error).__name__, 'errno': getattr(error, 'errno', None),
+              'winerror': getattr(error, 'winerror', None)}
+    text = str(error)
+    if re.fullmatch(r'[A-Z][A-Z0-9_]*', text):
+        result['code'] = text
+    return result
+
+
+def verify_no_other_active_sessions(request):
+    path = CONFIG / 'workbuddy.db'
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError('TURN_STORE_UNAVAILABLE')
+    with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE deleted_at IS NULL "
+            "AND status IN ('working', 'planning', 'pending') AND id <> ?",
+            (request.get('session_id', ''),)).fetchone()[0]
+    if count:
+        raise RuntimeError('OTHER_ACTIVE_SESSIONS')
+
+
+def run_scheduled_worker(task_name, arm_timeout=60):
+    if not isinstance(task_name, str) or not re.fullmatch(TASK_PATTERN, task_name):
+        raise ValueError('SCHEDULED_TASK_NAME_INVALID')
+    run_directory = CONFIG / 'restart-runs' / task_name
+    result = {'task_name': task_name, 'pid': os.getpid(), 'python_executable': sys.executable,
+              'started_at': utc_now(), 'stage': 'open_log', 'worker_exit_code': None,
+              'exit_code': 1, 'cleanup': {'cleanup': 'pending'}, 'events': []}
+    primary_exit = 1
+    audit_failed = False
+    duplicate_claim = False
+    claimed_ownership = False
+
+    def event(stage, **fields):
+        result['stage'] = stage
+        item = {'at': utc_now(), 'stage': stage, **fields}
+        result['events'].append(item)
+        log('scheduled ' + json.dumps(item, ensure_ascii=False))
+
+    try:
+        with LOG.open('a', encoding='utf-8', buffering=1) as output, \
+             redirect_stdout(output), redirect_stderr(output):
+            event('validate_request')
+            if not run_directory.is_dir() or run_directory.is_symlink():
+                raise RuntimeError('SCHEDULED_RUN_DIRECTORY_INVALID')
+            request = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
+            if not isinstance(request, dict) or request.get('scheduled_task') != task_name:
+                raise RuntimeError('SCHEDULED_REQUEST_TASK_MISMATCH')
+            if request.get('scheduled_python') and not same_executable(request['scheduled_python'], sys.executable):
+                raise RuntimeError('SCHEDULED_WORKER_EXECUTABLE_MISMATCH')
+            result['request_session_id'] = request.get('session_id', '')
+            result['old_pid'] = request.get('old_pid')
+            event('claim')
+            try:
+                with (run_directory / 'claimed').open('x', encoding='utf-8') as claimed:
+                    claimed_ownership = True
+                    json.dump({'task_name': task_name, 'pid': os.getpid(), 'at': utc_now()}, claimed)
+            except FileExistsError:
+                duplicate_claim = True
+                raise RuntimeError('SCHEDULED_ALREADY_CLAIMED') from None
+            if (run_directory / 'armed.json').exists():
+                raise RuntimeError('ARMING_PREEXISTS')
+            event('ready')
+            write_json(run_directory / 'ready.json', {'task_name': task_name, 'pid': os.getpid(),
+                        'at': utc_now(), 'python_executable': sys.executable})
+            event('wait_for_arming')
+            deadline = time.monotonic() + max(0, min(60, arm_timeout))
+            while time.monotonic() < deadline:
+                armed_path = run_directory / 'armed.json'
+                if armed_path.is_file():
+                    armed = json.loads(armed_path.read_text(encoding='utf-8-sig'))
+                    if not isinstance(armed, dict) or armed.get('task_name') != task_name:
+                        raise RuntimeError('ARMING_TASK_MISMATCH')
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('ARMING_TIMEOUT')
+                    break
+                time.sleep(.1)
+            else:
+                raise TimeoutError('ARMING_TIMEOUT')
+            event('wait_for_turn')
+            wait_for_turn(request)
+            event('check_other_sessions')
+            verify_no_other_active_sessions(request)
+            # Re-read immediately before entry; never consume a different run.
+            current = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
+            if current != request:
+                raise RuntimeError('SCHEDULED_REQUEST_CHANGED')
+            event('worker')
+            try:
+                worker()
+            except SystemExit as error:
+                primary_exit = error.code if isinstance(error.code, int) else (0 if error.code is None else 1)
+                result['worker_exit_code'] = primary_exit
+            except Exception as error:
+                result['worker_exit_code'] = 1
+                raise
+            else:
+                primary_exit = 0
+                result['worker_exit_code'] = 0
+            event('worker_finished', worker_exit_code=result['worker_exit_code'])
+    except Exception as error:
+        result['failed_stage'] = result['stage']
+        result['error'] = error_info(error)
+        primary_exit = 1
+    finally:
+        result['claimed_ownership'] = claimed_ownership
+        if not claimed_ownership:
+            # No exclusive claim means no authority over the request, task or primary result.
+            reason = 'skipped_duplicate_claim' if duplicate_claim else 'skipped_unclaimed'
+            result['request_cleanup'] = reason
+            result['cleanup'] = {'task_name': task_name, 'cleanup': reason}
+        else:
+            try:
+                removed = remove_scheduled_request(task_name)
+                result['request_cleanup'] = 'removed' if removed else 'absent_or_other_owner'
+            except Exception as error:
+                result['request_cleanup'] = 'failed'
+                result['request_cleanup_error'] = error_info(error)
+                audit_failed = True
+            try:
+                result['cleanup'] = cleanup_task(task_name)
+            except Exception as error:
+                result['cleanup'] = {'task_name': task_name, 'cleanup': 'failed', 'error': error_info(error)}
+                audit_failed = True
+        result['events'].append({'at': utc_now(), 'stage': 'cleanup',
+                                 'cleanup': result['cleanup']['cleanup']})
+        result['finished_at'] = utc_now()
+        result['exit_code'] = primary_exit if primary_exit != 0 else (1 if audit_failed else 0)
+        try:
+            result_name = 'result.json' if claimed_ownership else 'unclaimed-%d-%s.json' % (os.getpid(), uuid.uuid4().hex)
+            write_json(run_directory / result_name, result)
+        except Exception:
+            result['exit_code'] = result['exit_code'] or 1
+        try:
+            with LOG.open('a', encoding='utf-8') as output:
+                output.write(utc_now() + ' [scheduler] result ' + json.dumps(result, ensure_ascii=False) + '\n')
+        except OSError:
+            result['exit_code'] = result['exit_code'] or 1
+    return result['exit_code']
+
 
 
 def main():
@@ -684,6 +1122,10 @@ def main():
     if sys.argv[1:] == ['--worker']:
         worker()
         return
+    if sys.argv[1:2] == ['--scheduled-worker']:
+        if len(sys.argv) != 3:
+            raise RestartError('SCHEDULED_WORKER_ARGUMENTS_INVALID')
+        sys.exit(run_scheduled_worker(sys.argv[2]))
     parser = argparse.ArgumentParser(description='独立 Python 后台重启 WorkBuddy（Windows 版）')
     parser.add_argument('mode', choices=['install', 'help'], nargs='?', default='help')
     parser.add_argument('--server', choices=['openagent'], default='openagent')
@@ -693,6 +1135,10 @@ def main():
     parser.add_argument('--require-existing-trust', action='store_true')
     parser.add_argument('--dry-run', action='store_true', help='演练：不杀进程、不重启')
     parser.add_argument('--self-check', action='store_true', help='只读体检')
+    parser.add_argument('--scheduled', action='store_true',
+                        help='显式授权：用当前用户一次性计划任务托管重启')
+    parser.add_argument('--prepare-scheduled', metavar='TASKNAME',
+                        help='仅核验并写入计划任务请求，不创建后台进程')
     args = parser.parse_args()
 
     if args.self_check:
@@ -700,7 +1146,10 @@ def main():
     if args.mode == 'help':
         parser.print_help()
         return
-    launch(args)
+    if args.scheduled and not args.dry_run:
+        launch_scheduled(args)
+    else:
+        launch(args)
 
 
 if __name__ == '__main__':

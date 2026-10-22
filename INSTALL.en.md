@@ -158,7 +158,7 @@ No `sa_` prefix is required; treat the ID as opaque and do not use placeholders 
 
 ## 7. Restart WorkBuddy and send once
 
-Run this section only after OAuth, MCP merge and initialization, and trust verification succeed. The first Bash call verifies the plugin before preparing the restart script. Create a UTF-8 JSON file containing `{"message":"the complete startup message"}` using the file tool; JSON serialization must preserve newlines, quotes, and backslashes. Pass its absolute path as `message_file`.
+Run this section only after OAuth, MCP merge and initialization, and trust verification succeed. On macOS, the first Bash call verifies the plugin before preparing the restart script. Windows uses the two separate PowerShell calls below. Create a UTF-8 JSON file containing `{"message":"the complete startup message"}` using the file tool; JSON serialization must preserve newlines, quotes, and backslashes. Pass its absolute path as `message_file`.
 
 On macOS, use two separate Bash tool calls, each with `run_in_background=false` and `timeout=120000`. The first prepares settings, verifies the plugin, and downloads the published restart script. The second directly invokes that script so the host evaluates the command after the exclusion is written. The script itself creates the detached worker. Do not combine the calls, use host background mode, disable sandbox protections, or execute workspace copies of these scripts.
 
@@ -204,11 +204,13 @@ A worker PID proves only process creation. Acceptance requires old-process exit,
 
 ### Windows: first foreground PowerShell call
 
-After OAuth, MCP verification, and `TRUST_VERIFIED` succeed, use two separate foreground PowerShell tool calls. Each call must request native approval with `dangerouslyDisableSandbox=true` as specified at the start of this guide. Create the UTF-8 startup-message JSON with the file tool first, preserving the complete message and business request. Pass only its absolute path in the second call; do not place its content in arguments or logs. Download and run the published setup first. Only after it returns `PLUGIN_READY`, download the Windows Python restart script, check its syntax, and save it under the current user's `~/.workbuddy` without running a restart.
+After OAuth, MCP verification, and `TRUST_VERIFIED` succeed, use two separate foreground PowerShell tool calls with the tool arguments and native approval requirements specified at the start of this guide. Create a UTF-8 JSON file containing `{"message":"the complete startup message"}` with the file tool first, preserving the complete message and business request. Pass only its absolute path in the second call; do not place its content in arguments or logs. In the first call, run the existing setup and confirm `PLUGIN_READY`, then download and check the single Windows restart script. Record the absolute paths of the script and the actual Python executable; do not create a scheduled task or restart yet.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $OutputEncoding
+$env:PYTHONIOENCODING = 'utf-8'
 $installSource = 'gitee'
 $installBase = 'https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
 $targetDir = Join-Path $HOME '.workbuddy'
@@ -222,10 +224,14 @@ try {
   $code = $LASTEXITCODE
   $result | Write-Output
   if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
+  $pythonOutput = @(& python3 -c "import sys; assert sys.version_info >= (3,9); print(sys.executable)")
+  if ($LASTEXITCODE -ne 0 -or $pythonOutput.Count -ne 1) { throw 'Python resolution failed' }
+  $pythonExe = $pythonOutput[0].Trim()
+  if (-not [IO.Path]::IsPathRooted($pythonExe) -or -not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'Invalid Python executable' }
   $download = Join-Path $restartDir 'openagent-workbuddy-restart.py'
   curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-restart.py" -o $download
   if ($LASTEXITCODE -ne 0) { throw 'Restart script download failed' }
-  & python3 -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
+  & $pythonExe -B -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $download
   if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed' }
   $destination = Join-Path $targetDir 'openagent-workbuddy-restart.py'
   if (Test-Path -LiteralPath $destination) {
@@ -234,22 +240,27 @@ try {
   }
   Move-Item -LiteralPath $download -Destination $destination -Force
   Write-Output ('RESTART_SCRIPT_READY=' + $destination)
+  Write-Output ('RESTART_PYTHON_READY=' + $pythonExe)
 } finally {
   Remove-Item -LiteralPath $restartDir -Recurse -Force
 }
 ```
 
-For a failed download, apply "Download mirrors" only to that file and continue the unexecuted steps. Preserve the saved restart script; do not rerun setup, OAuth, or the entire preparation command. Stop on syntax, configuration, or permission failures. The setup script remains unchanged; Windows does not rely on the `.sh` exclusion it writes. Do not add broad `python`, `python3`, or `powershell` exclusions, use `ExecutionPolicy Bypass`, disable security settings, or bypass approval. Follow native host approval and stop if denied.
+For a failed download, apply "Download mirrors" only to that file and continue the unexecuted steps; do not rerun setup, OAuth, or the entire preparation command. Stop on syntax, configuration, or permission failures. Publish this guide together with the version of `scripts/openagent-workbuddy-restart.py` that supports `--scheduled` to `rel`. If an older script rejects the argument, stop; do not remove it and retry. No separate `scheduler.py` or `.ps1` file is needed. The setup script remains unchanged; Windows does not rely on its `.sh` exclusion. Do not add broad command exclusions, use `ExecutionPolicy Bypass`, or disable security settings.
 
-### Windows: second foreground PowerShell call
+### Windows: second PowerShell call creates a one-time scheduled task
 
-Proceed only after `PLUGIN_READY` and `RESTART_SCRIPT_READY`. Use the Python 3.9+ checked during preparation, replace both absolute paths, and run only:
+Proceed only after the first call succeeds and returns `PLUGIN_READY`, `RESTART_SCRIPT_READY`, and `RESTART_PYTHON_READY`. Replace the three placeholders with the Python and script absolute paths returned by this run and the absolute path of the same message JSON. Escape any single quote in a path as two single quotes inside the PowerShell string (`'` → `''`). The second call must run only:
 
 ```powershell
-python3 '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --require-existing-trust --wait-for-turn --message-file '<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>'
+& '<RESTART_PYTHON_READY_ABSOLUTE_PATH>' -X utf8 -B '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --scheduled --require-existing-trust --wait-for-turn --message-file '<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>'
 ```
 
-`--wait-for-turn` requires the current `CODEBUDDY_SESSION_ID`; if absent, stop instead of restarting immediately. The worker waits for `completed` before exiting old processes. It must break away from the host Job; failure stops without falling back to ordinary detached launch. This does not remove all command sandbox restrictions; native approval still applies. Discover the application executable from its running process rather than a fixed user directory or installation drive. Send the complete message once through CDP after restart. If the enable API is unavailable, attempt sending only when local configuration explicitly confirms the connector is not disabled; verify its connection and required tools in the new task. Actual Windows process termination, relaunch, and message injection have not been tested on a Windows host; offline checks do not prove those stages succeeded. Apply the acceptance and failure rules above; never resend when the result is unknown.
+With `--scheduled`, the script creates a one-time, on-demand scheduled task for the current user with `Interactive` logon and `Limited` privileges to start the same script's worker. There are no recurring triggers or automatic retries. It prefers `pythonw.exe` in the same directory and falls back to `python.exe`, which may show a console. Both run under Task Scheduler and do not require the old host to permit `CREATE_BREAKAWAY_FROM_JOB`. File and scheduled-task access still require normal authorization; stop on denial or timeout.
+
+`--wait-for-turn` binds to the current `CODEBUDDY_SESSION_ID`; stop if it is absent or the task database cannot be read in read-only mode. After confirming that the worker is ready and completing the ready/armed handshake, the entry point prints `TASK_NAME`, `SCHEDULED_WORKER_PID`, and `RESULT_PATH`, then returns. The installation Agent must immediately finish the current response using "Report completion or failure" without polling. The worker waits for the current task to reach `completed` and confirms that no other tasks are active before closing the old instance. A failed wait, changed instance, or failed handshake must prevent restart.
+
+Discover the application executable from its running process rather than a fixed user directory or installation drive. After restart, use the existing CDP flow to send the complete message once. If the enable API is unavailable, attempt sending only when local configuration explicitly confirms the connector is not disabled; verify its connection and required tools in the new task. The worker removes this run's scheduled task and request, retaining the logs and the result at `RESULT_PATH`. Apply the acceptance and failure rules above: a successful handshake proves only that the operation is scheduled. If sending or restart has occurred, or the result is unknown, inspect this run's result and the new task before any further action; do not schedule again or resend.
 
 For Windows OAuth commands, use `curl.exe`, UTF-8 output, a unique system temporary directory, exit-code checks, and `try/finally` cleanup. Feed exchange JSON through a single-quoted here-string to the Python script published on `rel`. Do not run macOS `chmod`, `mktemp`, or Bash restart commands.
 
@@ -257,7 +268,7 @@ For Windows OAuth commands, use `curl.exe`, UTF-8 output, a unique system tempor
 
 Only after OAuth, MCP merge and initialization, trust readback, and `PLUGIN_READY` all succeed may configuration be reported as complete. Tools are verified in the new task after restart; configuration completion must not be reported as successful host loading.
 
-When scheduling on the selected platform returns the independent Python worker creation log, the final response must contain exactly these two plain-text lines:
+After configuration is complete, macOS still treats the original script's independent Python worker creation log as proof that restart is scheduled. On Windows, scheduling is confirmed only when the command succeeds and returns `TASK_NAME`, `SCHEDULED_WORKER_PID`, and `RESULT_PATH` after completing the ready/armed handshake. Once the condition for the selected platform is met, the final response must contain exactly these two plain-text lines with no blank line between them:
 
 ```text
 OpenAgent installation and configuration are complete.
