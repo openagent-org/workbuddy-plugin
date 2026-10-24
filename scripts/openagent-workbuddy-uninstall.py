@@ -15,11 +15,7 @@ import sys
 import tempfile
 
 OPENAGENT_ENDPOINTS = (
-    "https://oasn-ow.haimawan.com/mcp/v1/open-agent",
-    "https://oasn-pre.haimawan.com/mcp/v1/open-agent",
-    "https://oasn-test.haimawan.com/e/preview/mcp/v1/open-agent",
-    "https://oasn-pre.haimawan.com/e/hkpreview/mcp/v1/open-agent-workbuddy",
-    "https://oasn-pre.haimawan.com/e/hkpreview/mcp/v1/open-agent",
+    "https://openagent.org/mcp/v1/open-agent",
 )
 OPENAGENT_SKILLS = (
     "user-guide", "use-agent", "stop-agent",
@@ -40,7 +36,6 @@ MARKETPLACE_URL = "https://github.com/openagent-org/workbuddy-plugin.git"
 MARKETPLACE_URLS = {
     MARKETPLACE_URL,
     "https://gitee.com/openagent-org/workbuddy-plugin.git",
-    "https://oasn-ow.haimawan.com/git/openagent/workbuddy-plugin.git",
 }
 
 

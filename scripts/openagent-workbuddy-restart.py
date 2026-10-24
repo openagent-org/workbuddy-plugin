@@ -46,7 +46,7 @@ PORT = 9222
 DEFAULT_MESSAGE = 'OpenAgent 已安装，打开新用户引导'
 REQUEST = CONFIG / 'wb-relaunch-message.json'
 LOG = CONFIG / 'logs' / 'wb-relaunch.log'
-TRUST_ORIGIN = b'https://oasn-ow.haimawan.com'
+TRUST_ORIGIN = b'https://openagent.org'
 TRUST_NAME = 'openagent'
 TARGET_NAME = 'WorkBuddy.exe'
 

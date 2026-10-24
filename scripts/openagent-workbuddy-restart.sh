@@ -93,7 +93,7 @@ def verify_trust():
     if path.is_symlink():raise RestartError('TRUST_FILE_SYMLINK')
     try:data=json.loads(path.read_text())
     except (OSError,ValueError):raise RestartError('TRUST_NOT_VERIFIED') from None
-    key=hashlib.sha256(b'https://oasn-ow.haimawan.com').hexdigest()+'::openagent'
+    key=hashlib.sha256(b'https://openagent.org').hexdigest()+'::openagent'
     stamp=data.get(key) if isinstance(data,dict) else None
     if type(stamp) is not int or stamp<=0:raise RestartError('TRUST_NOT_VERIFIED')
 

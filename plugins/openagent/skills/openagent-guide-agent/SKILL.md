@@ -98,7 +98,7 @@ For `zh-CN`:
 
 {reward_line}
 
-[浏览专家 Agent →      ](https://oasn-ow.haimawan.com/agents)
+[浏览专家 Agent →      ](https://openagent.org/agents)
 ```
 
 For `en-US`:
@@ -128,7 +128,7 @@ Through the OpenAgent network, WorkBuddy can automatically find, coordinate, and
 
 {reward_line}
 
-[Browse specialist Agents →](https://oasn-ow.haimawan.com/agents)
+[Browse specialist Agents →](https://openagent.org/agents)
 ```
 
 **Output:** The animation card when available and the fixed guidance message with an eligible reward line, or no message when the trigger does not match.

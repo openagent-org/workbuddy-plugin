@@ -1,6 +1,6 @@
 # OpenAgent WorkBuddy 安装指引（REL）
 
-本指南仅适用于 WorkBuddy。执行任何安装命令前，先确认当前会话实际所在的客户端，不要仅凭用户复制的安装提示词判断平台。如果当前客户端与本指南不一致，不得执行本文命令、注册 OAuth 客户端或修改配置；请先返回 [OpenAgent 安装汇总页](https://oasn-ow.haimawan.com/plugin)，找到当前客户端对应的安装链接，改用该指南继续安装。如果无法确认客户端，或汇总页没有对应平台，停止安装并询问用户。
+本指南仅适用于 WorkBuddy。执行任何安装命令前，先确认当前会话实际所在的客户端，不要仅凭用户复制的安装提示词判断平台。如果当前客户端与本指南不一致，不得执行本文命令、注册 OAuth 客户端或修改配置；请先返回 [OpenAgent 安装汇总页](https://openagent.org/plugin)，找到当前客户端对应的安装链接，改用该指南继续安装。如果无法确认客户端，或汇总页没有对应平台，停止安装并询问用户。
 
 附件上传需要 Node.js 20+。插件内置固定版本 COS Node.js SDK bundle，打包在执行 Skill 的 `scripts/cos_sdk.cjs.gz`；`scripts/cos_upload.cjs` 和 `scripts/cos_sdk.lock.json` 与该文件一并安装。首次需要 SDK 时，脚本离线校验压缩包及解压内容的 SHA-256，并解压到 `scripts/.cos-sdk/node_modules/<归档 SHA-256>/cos_sdk.cjs`；后续校验后复用，缓存缺失、损坏或 bundle 更新时自动重新解压，退出后保留缓存。`scripts/` 目录需当前用户可写。清理上传检查点不加载 SDK。不搜索宿主 SDK，不运行 `npm install`，也不下载依赖。缺少安装文件或校验失败时停止并修复插件安装。安装与 OAuth 脚本仍需要 Python 3.9+。
 
@@ -18,7 +18,7 @@ Windows 与 macOS 使用相同的下载镜像规则：优先 Gitee，保留已�
 
 ## 下载镜像
 
-安装 Agent 选源：`https://gitee.com/openagent-org/workbuddy-plugin.git`，备用 `https://github.com/openagent-org/workbuddy-plugin.git`。保留已有官方源，`setup.py --source gitee|github` 才显式切换；旧官网源仅供迁移。
+安装 Agent 选源：`https://gitee.com/openagent-org/workbuddy-plugin.git`，备用 `https://github.com/openagent-org/workbuddy-plugin.git`。保留已有官方源，`setup.py --source gitee|github` 才显式切换。
 
 安装脚本统一从 `rel` 下载。Gitee 基址为 `https://gitee.com/openagent-org/workbuddy-plugin/raw/rel`，GitHub 基址为 `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel`。切换来源时替换下载基址和 `install_source`，保留文件路径。
 
@@ -36,12 +36,12 @@ python3 --version
 
 需要 Python 3.9+ 和已运行过的 WorkBuddy。顺序执行，失败停止报告。前三步返回注册信息、PKCE 和授权码，第 4 步内部处理 Token；回复不复述授权码、VERIFIER 或 Token。
 
-旧 REL 安装迁移：从第 1 步重新注册并由用户在新域名授权，再执行第 4 步 `exchange`。脚本仅允许将 `https://oasn-pre.haimawan.com/mcp/v1/open-agent` 更新为 `https://oasn-ow.haimawan.com/mcp/v1/open-agent`，保留其他 MCP、自定义字段和禁用状态；其他环境或自定义地址仍停止覆盖。旧域名凭据不能用于 `resume` 或 `refresh`，不能只改其 `resource` 或复用旧 Token。新凭据保存后的失败才按后文恢复。信任登记使用新 origin；卸载仍兼容新旧 REL 配置。
+仅接受 `https://openagent.org/mcp/v1/open-agent` 的配置和凭据；其他来源停止覆盖，不能改写其 `resource` 或复用 Token。更新当前配置时保留其他 MCP、自定义字段和禁用状态；新凭据保存后的失败才按后文恢复。
 
 ## 1. 注册 OAuth 客户端（register）
 
 ```bash
-curl -s -X POST "https://oasn-ow.haimawan.com/owner-oauth/register" \
+curl -s -X POST "https://openagent.org/owner-oauth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "client_name": "workbuddy",
@@ -77,7 +77,7 @@ print(f'CHALLENGE={challenge}')
 python3 -c "
 import http.server, socketserver, urllib.parse, webbrowser, secrets
 state = secrets.token_urlsafe(32)
-URL = 'https://oasn-ow.haimawan.com/owner-oauth/authorize?response_type=code&client_id=<CLIENT_ID>&code_challenge=<CHALLENGE>&code_challenge_method=S256&redirect_uri=http://127.0.0.1:52961/callback&scope=agent.discover+agent.invoke+artifact.read&resource=https://oasn-ow.haimawan.com/mcp/v1/open-agent&state=' + state
+URL = 'https://openagent.org/owner-oauth/authorize?response_type=code&client_id=<CLIENT_ID>&code_challenge=<CHALLENGE>&code_challenge_method=S256&redirect_uri=http://127.0.0.1:52961/callback&scope=agent.discover+agent.invoke+artifact.read&resource=https://openagent.org/mcp/v1/open-agent&state=' + state
 captured = {}
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -133,7 +133,7 @@ JSON
 
 第 4 步初始化成功后，以内存中已校验的固定来源合并 `~/.workbuddy/mcp-approvals.json`；不另执行 trust 或读取 MCP 正文。登记前后仅用设备、inode、大小、纳秒修改时间检测 MCP 变化，变化停止；不替代内容或认证验证。
 
-信任键为 `SHA-256(URL.origin)::openagent`，固定来源 `https://oasn-ow.haimawan.com`，不含 Token、路径或请求头。保留其他记录、已有正整数时间戳及权限，新建为 `0600`；空白文件按空记录合并，损坏 JSON、非法字段或符号链接停止。原子写入后仅回读信任记录，成功输出 `TRUST_VERIFIED`；失败用 resume，不重复 OAuth。
+信任键为 `SHA-256(URL.origin)::openagent`，固定来源 `https://openagent.org`，不含 Token、路径或请求头。保留其他记录、已有正整数时间戳及权限，新建为 `0600`；空白文件按空记录合并，损坏 JSON、非法字段或符号链接停止。原子写入后仅回读信任记录，成功输出 `TRUST_VERIFIED`；失败用 resume，不重复 OAuth。
 
 此记录不替代浏览器 OAuth、宿主文件审批或连接器启用；不要求回复“已信任”。已有 disabled 保持；缓存加载须按文末重启后在新任务验证。
 
@@ -218,7 +218,7 @@ OpenAgent 已安装，打开新用户引导
 )
 ```
 
-登记所选官方源 `rel`；旧官网源可迁移，未知同名源停止。未传 `--source` 保留已有官方源，新装默认 Gitee。须回读匹配的宿主来源，安装与缓存版本一致且至少 `0.2.84`，才接受 `PLUGIN_READY`。旧源/缓存未刷新则等待；60 秒超时不作为换源依据，不清缓存、不报告完成。原生下载明确发生可回退网络错误时，确认已结束且未安排重启，只恢复来源和未完成下载，不重复 OAuth。
+登记所选官方源 `rel`；未知同名源停止。未传 `--source` 保留已有官方源，新装默认 Gitee。须回读匹配的宿主来源，安装与缓存版本一致且至少 `0.2.84`，才接受 `PLUGIN_READY`。旧源/缓存未刷新则等待；60 秒超时不作为换源依据，不清缓存、不报告完成。原生下载明确发生可回退网络错误时，确认已结束且未安排重启，只恢复来源和未完成下载，不重复 OAuth。
 
 ### macOS：第二次 Bash 直接安排重启
 
@@ -285,7 +285,7 @@ Write-Output ('SETUP_CHECK_EXIT=' + $checkCode)
 
 需要编辑时，使用 WorkBuddy 原生 Read/Edit 和正常审批，只合并下列目标字段。JSON 以 Gitee 为例；本次选择 GitHub 时，将 `source.url` 改为 `https://github.com/openagent-org/workbuddy-plugin.git`，与预检的 `$installSource` 保持一致：
 
-- 先按预检给出的路径读取相关字段，重新检查来源。只接受同名市场缺失、Gitee/GitHub 官方 git 来源（`ref=rel`）或本指南的旧官网迁移；未知来源、结构错误、重复键或无法唯一定位时停止。
+- 先按预检给出的路径读取相关字段，重新检查来源。只接受同名市场缺失、Gitee/GitHub 官方 git 来源（`ref=rel`）；未知来源、结构错误、重复键或无法唯一定位时停止。
 - 已有文件只用 Edit，保留其他插件、市场及 `openagent-workbuddy` 对象的其他字段。示例 JSON 是合并目标，不能用来覆盖整份文件。
 - 标记不代表文件不存在。只有原生 Read/文件元信息明确确认不存在（不是无权读取），且写前仍不存在，才可用原生 Write 创建示例中的最小 JSON；文件已出现就停止，不覆盖。
 - 只改这两个目标，不改 MCP、信任、沙箱开关或项目配置，不输出整份 settings 或凭据。编辑匹配失败、权限拒绝或审批失败即停止，不用 shell/Python 兜底，也不循环编辑。

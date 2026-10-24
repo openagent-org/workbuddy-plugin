@@ -39,10 +39,9 @@ try:
     before = path.read_bytes() if path.exists() else None
     data = json.loads(before) if before is not None else {}
     source = selected_source
-    legacy_source = {'source': 'git', 'url': 'https://oasn-ow.haimawan.com/git/openagent/workbuddy-plugin.git', 'ref': 'rel'}
     market = data.setdefault('extraKnownMarketplaces', {}).setdefault('openagent-workbuddy', {'source': source})
-    if market.get('source') not in (*official_sources.values(), legacy_source): raise SystemExit('openagent-workbuddy 市场来源冲突，停止')
-    if requested_source is None and market['source'] in official_sources.values():
+    if market.get('source') not in official_sources.values(): raise SystemExit('openagent-workbuddy 市场来源冲突，停止')
+    if requested_source is None:
         source = market['source']
     selected_source = source
     market['source'] = source

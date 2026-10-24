@@ -77,7 +77,7 @@ def sign_in(saved, url, scope):
         server.timeout = 1
         redirect_uri = 'http://127.0.0.1:52961/callback'
         if client_id is None:
-            request = urllib.request.Request('https://oasn-ow.haimawan.com/owner-oauth/register',
+            request = urllib.request.Request('https://openagent.org/owner-oauth/register',
                 data=json.dumps({'client_name': 'workbuddy', 'redirect_uris': [redirect_uri],
                     'grant_types': ['authorization_code', 'refresh_token'], 'response_types': ['code'],
                     'token_endpoint_auth_method': 'none', 'scope': scope}).encode(),
@@ -92,7 +92,7 @@ def sign_in(saved, url, scope):
             'resource': url, 'scope': scope, 'state': expected_state,
             'code_challenge': challenge, 'code_challenge_method': 'S256'}
         try:
-            opened = webbrowser.open('https://oasn-ow.haimawan.com/owner-oauth/authorize?' + urllib.parse.urlencode(parameters))
+            opened = webbrowser.open('https://openagent.org/owner-oauth/authorize?' + urllib.parse.urlencode(parameters))
         except (OSError, webbrowser.Error):
             raise SystemExit('无法打开 OpenAgent 登录页面，停止') from None
         if not opened:
@@ -126,8 +126,7 @@ def main():
         except (OSError, ValueError, TypeError, KeyError):
             raise SystemExit('请通过标准输入 JSON 提供有效 client_id、code 和 verifier，停止；不输出输入内容') from None
 
-    url = 'https://oasn-ow.haimawan.com/mcp/v1/open-agent'
-    legacy_url = 'https://oasn-pre.haimawan.com/mcp/v1/open-agent'
+    url = 'https://openagent.org/mcp/v1/open-agent'
     path = Path.home() / '.workbuddy' / 'mcp.json'
     credential = path.with_name('openagent-rel-oauth.json')
     scope = 'agent.discover agent.invoke artifact.read'
@@ -147,7 +146,7 @@ def main():
         if mode == 'sign-in' and entry.get('disabled') is True:
             raise SystemExit('OpenAgent 连接已禁用，停止；请先在 WorkBuddy 中启用连接')
         if ('command' in entry or 'args' in entry or entry.get('type', 'http') != 'http'
-                or entry.get('url', url) not in (url, legacy_url)):
+                or entry.get('url', url) != url):
             raise SystemExit('openagent 已有其他类型或来源配置，停止')
         headers = entry.setdefault('headers', {})
         if not isinstance(headers, dict): raise SystemExit('MCP 请求头类型错误，停止')
@@ -168,7 +167,7 @@ def main():
                     'client_id': client_id, 'resource': url}
         if mode != 'resume':
             stage = '交换 Token' if mode in ('exchange', 'sign-in') else '刷新 Token'
-            request = urllib.request.Request('https://oasn-ow.haimawan.com/owner-oauth/token',
+            request = urllib.request.Request('https://openagent.org/owner-oauth/token',
                 data=urllib.parse.urlencode(form).encode(), headers={'Content-Type': 'application/x-www-form-urlencoded'})
             with urllib.request.urlopen(request, timeout=30) as response: token = json.load(response)
             if 'error' in token: raise SystemExit(stage + '失败，停止；不重试本次请求')
@@ -239,7 +238,7 @@ def main():
         old = approvals.read_bytes() if approvals.exists() else None
         content = (old or b'').strip(b' \t\r\n') or b'{}'
         records = json.loads(content)
-        key = hashlib.sha256(b'https://oasn-ow.haimawan.com').hexdigest() + '::openagent'
+        key = hashlib.sha256(b'https://openagent.org').hexdigest() + '::openagent'
         stamp = records.setdefault(key, int(time.time() * 1000))
         if type(stamp) is not int or stamp <= 0: raise SystemExit('信任时间戳异常，停止')
         if old is None or records != json.loads(content):

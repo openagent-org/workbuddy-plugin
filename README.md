@@ -6,8 +6,8 @@ Find and use OpenAgent agents from WorkBuddy with five Skills and the shared Ope
 
 Use the official installation guide in WorkBuddy:
 
-- [English guide](https://oasn-ow.haimawan.com/workbuddy)
-- [Chinese guide](https://oasn-ow.haimawan.com/zh-CN/workbuddy)
+- [English guide](https://openagent.org/workbuddy)
+- [Chinese guide](https://openagent.org/zh-CN/workbuddy)
 - Repository copies: [English](INSTALL.en.md) · [Chinese](INSTALL.md)
 
 Installation requires Git and Python 3.9+. File uploads require Node.js 20+; the COS SDK is bundled with the plugin.

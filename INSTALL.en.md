@@ -1,6 +1,6 @@
 # Install OpenAgent in WorkBuddy (REL)
 
-This guide is only for WorkBuddy. Before running anything, confirm the actual client instead of trusting a copied prompt. If the platform does not match, do not run commands, register OAuth, or change configuration. Return to the [OpenAgent installation hub](https://oasn-ow.haimawan.com/plugin) and use the guide for the current client. If the client cannot be identified or is not listed, stop and ask the user.
+This guide is only for WorkBuddy. Before running anything, confirm the actual client instead of trusting a copied prompt. If the platform does not match, do not run commands, register OAuth, or change configuration. Return to the [OpenAgent installation hub](https://openagent.org/plugin) and use the guide for the current client. If the client cannot be identified or is not listed, stop and ask the user.
 
 Attachment uploads require Node.js 20+. The plugin includes the fixed COS Node.js SDK bundle in the run Skill’s `scripts/cos_sdk.cjs.gz`, installed alongside `scripts/cos_upload.cjs` and `scripts/cos_sdk.lock.json`. On first use, the script verifies the compressed and decompressed SHA-256 values offline and decompresses the bundle into `scripts/.cos-sdk/node_modules/<archive SHA-256>/cos_sdk.cjs`. Later uses verify and reuse the cache; a missing or damaged cache, or an updated bundle, triggers decompression automatically. The cache remains after exit. The current user must be able to write to `scripts/`. Upload checkpoint cleanup does not load the SDK. The plugin does not search for a host SDK, run `npm install`, or download dependencies. Stop and repair the plugin installation if installation files are missing or verification fails. Installation and OAuth scripts still require Python 3.9+.
 
@@ -10,11 +10,11 @@ On Windows, use WorkBuddy's native PowerShell tool. For every call that executes
 
 Windows uses the same official sources and download fallback rules as macOS: prefer Gitee, preserve an existing official source, and allow one switch to the other official source only for the download failures listed below. Publish this guide together with its matching `scripts/openagent-workbuddy-setup.py` to `rel`. macOS keeps its existing published flow.
 
-To migrate an existing REL installation, start again from step 1, register a new client in step 2, have the user authorize on the new domain, and run step 4 in `exchange` mode. The script accepts migration only from `https://oasn-pre.haimawan.com/mcp/v1/open-agent` to `https://oasn-ow.haimawan.com/mcp/v1/open-agent`, preserving other MCP servers, custom fields, and disabled state. Other environments and custom URLs remain conflicts. Credentials for the old domain cannot be used with `resume` or `refresh`; do not relabel their `resource` or reuse their tokens. Recovery applies only after new credentials have been saved. Trust uses the new origin; uninstall remains compatible with both REL URLs.
+Only accept configuration and credentials for `https://openagent.org/mcp/v1/open-agent`. Stop on other sources; do not relabel their `resource` or reuse their tokens. Preserve other MCP servers, custom fields, and disabled state when updating the current configuration. Recovery applies only after new credentials have been saved.
 
 ## Download mirrors
 
-The installation Agent prefers `https://gitee.com/openagent-org/workbuddy-plugin.git`, with `https://github.com/openagent-org/workbuddy-plugin.git` as the fallback. Preserve an existing official source unless explicitly switching with `setup.py --source gitee|github`. The old website source is accepted only for migration.
+The installation Agent prefers `https://gitee.com/openagent-org/workbuddy-plugin.git`, with `https://github.com/openagent-org/workbuddy-plugin.git` as the fallback. Preserve an existing official source unless explicitly switching with `setup.py --source gitee|github`.
 
 Download installation scripts directly from `rel`. Use `https://gitee.com/openagent-org/workbuddy-plugin/raw/rel` for Gitee or `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel` for GitHub. When switching sources, replace the download base and `install_source` while preserving the file path.
 
@@ -39,7 +39,7 @@ Python 3.9 or newer and a previously launched WorkBuddy installation are require
 Register a public OAuth client:
 
 ```bash
-curl -s -X POST "https://oasn-ow.haimawan.com/owner-oauth/register" \
+curl -s -X POST "https://openagent.org/owner-oauth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "client_name": "workbuddy",
@@ -75,7 +75,7 @@ Replace `<CLIENT_ID>` and `<CHALLENGE>`, then run the command once. It opens the
 python3 -c "
 import http.server, socketserver, urllib.parse, webbrowser, secrets
 state = secrets.token_urlsafe(32)
-URL = 'https://oasn-ow.haimawan.com/owner-oauth/authorize?response_type=code&client_id=<CLIENT_ID>&code_challenge=<CHALLENGE>&code_challenge_method=S256&redirect_uri=http://127.0.0.1:52961/callback&scope=agent.discover+agent.invoke+artifact.read&resource=https://oasn-ow.haimawan.com/mcp/v1/open-agent&state=' + state
+URL = 'https://openagent.org/owner-oauth/authorize?response_type=code&client_id=<CLIENT_ID>&code_challenge=<CHALLENGE>&code_challenge_method=S256&redirect_uri=http://127.0.0.1:52961/callback&scope=agent.discover+agent.invoke+artifact.read&resource=https://openagent.org/mcp/v1/open-agent&state=' + state
 captured = {}
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -125,7 +125,7 @@ Credentials and MCP configuration are stored separately in `~/.workbuddy/openage
 
 Continue only after both `MCP_VERIFIED` and `TRUST_VERIFIED`. Do not expose Tokens, response bodies, or exception details. If the Token was saved but a later configuration, initialization, or trust step failed, rerun the same downloaded program with `mode='resume'`; do not exchange the one-time code again. If exchange outcome is unknown or saving failed, stop and investigate instead of replaying the request.
 
-`X-OASN-MCP-Legacy-SSE: enabled` permits WorkBuddy's legacy HTTP+SSE fallback while normal HTTP POST remains supported. It does not replace Bearer authentication. Trust is keyed by `SHA-256(URL.origin)::openagent` for the fixed origin `https://oasn-ow.haimawan.com`; it does not replace browser OAuth, host file approval, or connector enablement.
+`X-OASN-MCP-Legacy-SSE: enabled` permits WorkBuddy's legacy HTTP+SSE fallback while normal HTTP POST remains supported. It does not replace Bearer authentication. Trust is keyed by `SHA-256(URL.origin)::openagent` for the fixed origin `https://openagent.org`; it does not replace browser OAuth, host file approval, or connector enablement.
 
 ## 5. Refresh an expired Token
 
@@ -166,7 +166,7 @@ On macOS, use two separate Bash tool calls, each with `run_in_background=false` 
 
 If the restart script download fails after setup has run, follow "Download mirrors" for that file and continue only the remaining steps. Do not rerun setup, OAuth, or the entire preparation command.
 
-登记所选官方源 `rel`；旧官网源可迁移，未知同名源停止。未传 `--source` 保留已有官方源，新装默认 Gitee。须回读匹配的宿主来源，安装与缓存版本一致且至少 `0.2.84`，才接受 `PLUGIN_READY`。旧源/缓存未刷新则等待；60 秒超时不作为换源依据，不清缓存、不报告完成。原生下载明确发生可回退网络错误时，确认已结束且未安排重启，只恢复来源和未完成下载，不重复 OAuth。
+登记所选官方源 `rel`；未知同名源停止。未传 `--source` 保留已有官方源，新装默认 Gitee。须回读匹配的宿主来源，安装与缓存版本一致且至少 `0.2.84`，才接受 `PLUGIN_READY`。旧源/缓存未刷新则等待；60 秒超时不作为换源依据，不清缓存、不报告完成。原生下载明确发生可回退网络错误时，确认已结束且未安排重启，只恢复来源和未完成下载，不重复 OAuth。
 
 ```bash
 (
@@ -245,7 +245,7 @@ Evaluate `SETUP_CHECK_EXIT` together with the actual output; do not use the oute
 
 When editing is required, use WorkBuddy's native Read/Edit tools with normal approval to merge only the following target fields:
 
-- Read the relevant fields at the path returned by preflight and recheck the source. Accept only a missing same-name marketplace, an official Gitee/GitHub git source with `ref=rel`, or the legacy website migration described in this guide. Stop on an unknown source, invalid structure, duplicate keys, or an edit target that cannot be uniquely located.
+- Read the relevant fields at the path returned by preflight and recheck the source. Accept only a missing same-name marketplace or an official Gitee/GitHub git source with `ref=rel`. Stop on an unknown source, invalid structure, duplicate keys, or an edit target that cannot be uniquely located.
 - Use only Edit for an existing file. Preserve other plugins, marketplaces, and other fields in the `openagent-workbuddy` object. The example JSON is the merge target; do not use it to overwrite the whole file.
 - The marker does not mean the file is missing. Use native Write to create the minimal example JSON only when native Read or file metadata explicitly confirms the file is absent, rather than unreadable, and it is still absent immediately before writing. Stop if the file has appeared; do not overwrite it.
 - Change only these two targets. Do not change MCP, trust, sandbox switches, or project configuration, and do not print the complete settings file or credentials. Stop if the edit match fails, permission is denied, or approval fails; do not fall back to shell/Python or repeatedly edit.
