@@ -24,14 +24,14 @@ Use `display_locale`; if unset, choose explicit preference > trusted Host locale
 
 ## Login
 
-使用当前 WorkBuddy 宿主的本地命令执行器。下载优先使用 `https://gitee.com/openagent-org/workbuddy-plugin.git`，备用为 `https://github.com/openagent-org/workbuddy-plugin.git`。先用 `git ls-remote --exit-code <所选仓库> refs/heads/rel` 保存完整 40 位 `install_sha`；首源在解析 SHA 前发生可回退网络错误时，备用源可确定本次初始 SHA。取得 SHA 后不得重新解析备用源的 rel。下载路径固定为 `scripts/openagent-workbuddy-exchange.py`：首源 `https://gitee.com/openagent-org/workbuddy-plugin/raw/<INSTALL_SHA>/scripts/openagent-workbuddy-exchange.py`，备用 `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/<INSTALL_SHA>/scripts/openagent-workbuddy-exchange.py`，两次沿用相同完整 SHA 和路径。
+Use the current WorkBuddy Host's local command executor. Prefer `https://gitee.com/openagent-org/workbuddy-plugin.git`, with `https://github.com/openagent-org/workbuddy-plugin.git` as the fallback. First run `git ls-remote --exit-code <selected-repository> refs/heads/rel` and retain the full 40-character `install_sha`. If the primary source encounters an eligible network failure before resolving a SHA, the fallback may establish this loading attempt's initial SHA. Once a SHA has been obtained, do not resolve the fallback's rel again. The download path is fixed at `scripts/openagent-workbuddy-exchange.py`: use `https://gitee.com/openagent-org/workbuddy-plugin/raw/<INSTALL_SHA>/scripts/openagent-workbuddy-exchange.py` for the primary source and `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/<INSTALL_SHA>/scripts/openagent-workbuddy-exchange.py` for the fallback, retaining the same full SHA and path for both.
 
-使用 `curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https'`（Windows 使用 `curl.exe`）完整下载到私有临时目录；仅 DNS、连接、超时、传输中断或 HTTP 5xx 可在原命令结束后切到备用源一次。权限或审批拒绝、证书校验、HTTP 401/403/404/429/451、摘要或语法校验错误不换源；备用失败停止，不来回循环。丢弃失败下载的残片；完整下载成功后只运行一次 `python3 "<downloaded-script>" --mode sign-in`，退出后只清理该临时目录。脚本已启动、登录取消、OAuth/MCP 或配置失败均不得换源重跑登录；保持前述单次登录和已有会话等待规则。
+Use `curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https'` (`curl.exe` on Windows) to download the complete file into a private temporary directory. Only DNS, connection, timeout, interrupted-transfer, or HTTP 5xx failures allow one switch to the fallback after the original command has ended. Do not switch sources for permission or approval denial, certificate validation errors, HTTP 401/403/404/429/451, or digest or syntax validation errors. Stop if the fallback fails; do not switch back and forth. Discard partial failed downloads. After a complete successful download, run `python3 "<downloaded-script>" --mode sign-in` exactly once, then remove only that temporary directory after the process exits. Once the script has started, do not switch sources and rerun sign-in because of cancellation, OAuth/MCP failure, or configuration failure. Preserve the single-attempt and existing-session waiting rules above.
 
 If curl fails, request one retry outside the sandbox using the exact
 same command (Codex: sandbox_permissions="require_escalated",
 with a justification).
-该审批规则仅处理同一下载命令；审批拒绝不得换源，批准后仍仅在上述网络错误时切换一次镜像。
+This approval rule applies only to the same download command. Approval denial must not trigger a source switch; after approval, switching mirrors once is still allowed only for the network failures listed above.
 
 On success, use the response; on execution failure, use the existing
 fallback. If approval is denied, continue without the manual.
