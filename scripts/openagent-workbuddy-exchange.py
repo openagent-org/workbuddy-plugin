@@ -78,7 +78,7 @@ def sign_in(saved, url, scope):
         redirect_uri = 'http://127.0.0.1:52961/callback'
         if client_id is None:
             request = urllib.request.Request('https://openagent.org/owner-oauth/register',
-                data=json.dumps({'client_name': 'workbuddy', 'redirect_uris': [redirect_uri],
+                data=json.dumps({'client_name': 'workbuddy', 'client_source': 'workbuddy', 'redirect_uris': [redirect_uri],
                     'grant_types': ['authorization_code', 'refresh_token'], 'response_types': ['code'],
                     'token_endpoint_auth_method': 'none', 'scope': scope}).encode(),
                 headers={'Content-Type': 'application/json'})
@@ -201,7 +201,9 @@ def main():
         if not isinstance(token.get('access_token'), str) or not token['access_token'].strip():
             raise SystemExit('私有凭据缺少有效 Token，停止')
         stage = '配置 MCP'
-        headers.update({'Authorization': 'Bearer ' + token['access_token'],
+        for key in list(headers):
+            if key.lower() == 'x-oasn-client-source': del headers[key]
+        headers.update({'X-OASN-Client-Source': 'workbuddy', 'Authorization': 'Bearer ' + token['access_token'],
             'X-OASN-MCP-Content-Mode': 'text-compatible', 'X-OASN-MCP-Legacy-SSE': 'enabled'})
         entry.update({'type': 'http', 'url': url, 'timeout': 86400000})
         if before is not None and data == json.loads(before) and path.stat().st_mode & 0o777 == 0o600:

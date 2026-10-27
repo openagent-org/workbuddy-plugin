@@ -45,6 +45,7 @@ curl -s -X POST "https://openagent.org/owner-oauth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "client_name": "workbuddy",
+    "client_source": "workbuddy",
     "redirect_uris": ["http://127.0.0.1:52961/callback"],
     "grant_types": ["authorization_code", "refresh_token"],
     "response_types": ["code"],
