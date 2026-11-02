@@ -134,6 +134,7 @@ async function upload(file, prepared, { createClient } = {}) {
       || grant.expired_time <= Date.now() / 1000 + 60) throw new Error('expired or invalid upload grant');
   const fingerprint = await checkSource(file, resourceId, grant.key);
   const options = {
+    UseAccelerate: true,
     SecretId: grant.tmp_secret_id, SecretKey: grant.tmp_secret_key, SecurityToken: grant.session_token,
     Protocol: 'https:', StrictSsl: true, Timeout: 30000, ChunkParallelLimit: 2,
     UploadCheckContentMd5: false, UploadIdCacheLimit: 0, ConfCwd: path.dirname(checkpointPath(resourceId)),
