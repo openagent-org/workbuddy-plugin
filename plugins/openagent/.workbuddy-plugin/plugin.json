@@ -1,6 +1,6 @@
 {
   "name": "openagent",
-  "version": "0.2.95",
+  "version": "0.2.96",
   "description": "在 WorkBuddy 中使用共享 OpenAgent MCP 搜索、选择并调用 Agent。",
   "author": {
     "name": "Huang Li"

@@ -156,7 +156,7 @@ The following `data` and attachment rules apply to ordinary business-parameter m
 
 ### Agent Execution
 
-Input is the complete parameters from Request Preparation. Emit the Agent Execution update before calling the progress and execution tools; describe the current invocation action without claiming that submission has completed. The stable `idempotency_key` must be valid and non-placeholder, and reused for the corresponding `openagent_progress` and `openagent_run`.
+Input is the complete parameters from Request Preparation. Emit the Agent Execution update before calling the progress and execution tools; describe the current invocation action without claiming that submission has completed. The stable `idempotency_key` must be valid and non-placeholder, and reused for the corresponding `openagent_progress` and `openagent_run`. Do not send a separate prompt preview, fenced code block, or duplicate invocation data; use the progress card or page.
 
 1. Then call `openagent_progress` with trusted `agent_id` and `agent_name`, and the same `idempotency_key` and `locale` as the Run. Optional display fields must come only from trusted Agent metadata. When only an ID is available without a trusted name, use the original `agent_id` as the display identifier in `agent_name`, without claiming it is the Agent's actual name. Keep the same original ID in `openagent_run.agent_id`.
 2. Wait for the Host MCP Tool Result of `openagent_progress`. On an authentication failure, follow Runtime Sign-in and stop here. Otherwise call `openagent_run` once with `async=true` and the same `idempotency_key` and `locale`. Failure or timeout of `openagent_progress` affects only progress display unless authentication failed; still perform this one Run.
