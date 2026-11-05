@@ -96,6 +96,8 @@ Follow the orchestration defined in Workflow and transition between stages only 
 
 For an OpenAgent onboarding or usage-help request, hand off to [User Guide](../openagent-guide-agent/SKILL.md#user-guide) without searching. Do not apply this route to requests to explain, edit, or debug the plugin. If a required MCP tool remains missing after one Host lookup, report that the requested capability is unavailable and stop without starting interactive OAuth or a business invocation.
 
+First, if the user only wants to find, recommend, select, or browse Agents, with or without explicit search terms and no business task to decompose or execute, pass the original request to [openagent-search-agent](../openagent-search-agent/SKILL.md) as a direct user search and exit this router before the checks below.
+
 Determine whether OpenAgent discovery would materially improve the task.
 
 - Return `not_passed` when the request requires local-only execution.
