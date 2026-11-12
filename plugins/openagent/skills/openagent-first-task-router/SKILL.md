@@ -337,4 +337,4 @@ After the gate is satisfied, treat the loaded reference as the sole authority fo
 
 ## Close the Right-Side Built-In Browser
 
-When the user requests closing the right-side built-in browser, first follow the [shared closing procedure](../openagent-search-agent/SKILL.md#close-the-right-side-built-in-browser) to write and open a temporary HTML file once through `present_files`, without starting Agent search, execution, installation, or account queries. Do not use `window.close()`. No page handle or additional close tool is required; do not claim closure without observing it. Do not repeat a closing attempt already made by the selection flow. Keep result pages open by default and close them only when the user explicitly requests it.
+For an explicit close request, follow the [shared closing procedure](../openagent-search-agent/SKILL.md#close-the-right-side-built-in-browser). Do not start other OpenAgent work or repeat a prior close attempt.

@@ -2,6 +2,8 @@
 
 Find and use OpenAgent agents from WorkBuddy with five Skills and the shared OpenAgent MCP connection.
 
+To close the discovery tab automatically after selection, enable Browser Use in WorkBuddy under Settings > Agent > Browser control. Without it, discovery still opens in the right panel, but you close the tab manually.
+
 ## Install or update
 
 Use the official installation guide in WorkBuddy:
