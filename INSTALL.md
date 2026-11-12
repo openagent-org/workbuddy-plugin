@@ -17,7 +17,7 @@ GitHub 市场使用 `https://github.com/openagent-org/workbuddy-plugin.git`。�
 
 ## 准备
 
-开始只说“正在安装 OpenAgent…”，需要浏览器授权时只说“请在打开的页面中登录 OpenAgent…”。不重复播报；最终回复按“完成报告”。
+开始只说“正在安装 OpenAgent…”。登录阶段按第 3、4 步的实际结果各提示一次，最终回复按“完成报告”处理。
 
 ```bash
 curl --version
@@ -63,32 +63,38 @@ print(f'CHALLENGE={challenge}')
 
 ## 3. 浏览器授权（authorize）
 
-填入 `<CLIENT_ID>`、`<CHALLENGE>` 后执行一次。取消、超时、拒绝或 state 不符即停止，不自动重新授权。
+填入 `<CLIENT_ID>`、`<CHALLENGE>` 后执行一次。收到 `SIGN_IN_OPENED` 且仍在等待时，只说“请在打开的页面中登录 OpenAgent…”，继续等待同一进程。
+
+仅当进程以 `SIGN_IN_TIMED_OUT` 退出时，以“还未完成登录。回复“继续登录”，我会重新打开登录页面。”结束本轮。用户回复“继续登录”后，复用已注册的客户端，从第 2 步重新生成 PKCE 并执行一次第 3 步。取消、拒绝或回调校验失败即停止，不自动重新授权。
 
 ```bash
 python3 -c "
-import http.server, socketserver, urllib.parse, webbrowser, secrets
+import http.server, socketserver, urllib.parse, webbrowser, secrets, time
 state = secrets.token_urlsafe(32)
 URL = 'https://openagent.org/owner-oauth/authorize?response_type=code&client_id=<CLIENT_ID>&code_challenge=<CHALLENGE>&code_challenge_method=S256&redirect_uri=http://127.0.0.1:52961/callback&scope=agent.discover+agent.invoke+artifact.read&resource=https://openagent.org/mcp/v1/open-agent&state=' + state
 captured = {}
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if 'code' in q or 'error' in q:
-            valid = secrets.compare_digest(q.get('state', [''])[0], state) and 'error' not in q
-            captured['code'] = q.get('code', [''])[0] if valid else ''
-            self.send_response(200 if captured['code'] else 400)
-            self.end_headers()
-            self.wfile.write(b'OpenAgent authorized - you can close this tab.' if captured['code'] else b'Authorization failed - you can close this tab.')
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True)
+        if 'code' not in q and 'error' not in q: return
+        valid_state = secrets.compare_digest(q.get('state', [''])[0].encode(), state.encode())
+        captured['error'] = q.get('error', [''])[0] if valid_state else ''
+        captured['code'] = q.get('code', [''])[0] if valid_state and 'error' not in q else ''
+        self.send_response(200 if captured['code'] else 400)
+        self.end_headers()
+        self.wfile.write(b'OpenAgent authorized - you can close this tab.' if captured['code'] else b'Authorization failed - you can close this tab.')
     def log_message(*a): pass
 with socketserver.TCPServer(('127.0.0.1', 52961), H) as s:
     s.timeout = 1
-    webbrowser.open(URL)
-    print('请在浏览器中登录并同意授权……')
-    for _ in range(180):
+    if not webbrowser.open(URL): raise SystemExit('SIGN_IN_OPEN_FAILED')
+    print('SIGN_IN_OPENED', flush=True)
+    deadline = time.monotonic() + 180
+    while not captured and time.monotonic() < deadline:
         s.handle_request()
-        if 'code' in captured: break
-if not captured.get('code'): raise SystemExit('授权取消、超时或 state 不符，停止')
+if 'code' not in captured: raise SystemExit('SIGN_IN_TIMED_OUT')
+if captured['error'] == 'access_denied': raise SystemExit('SIGN_IN_CANCELLED')
+if captured['error']: raise SystemExit('SIGN_IN_FAILED')
+if not captured['code']: raise SystemExit('SIGN_IN_INVALID_CALLBACK')
 print('CODE=' + captured['code'])
 "
 ```
@@ -113,7 +119,7 @@ JSON
 )
 ```
 
-只有输出 `MCP_VERIFIED` 和 `TRUST_VERIFIED` 才能继续，不另执行 trust。已输出 `TOKEN_SAVED` 但后续配置/验证失败时，将本命令改为 `mode='resume'`，不再次换码。换码结果未知或保存失败时停止核对，不重放。凭据位于 `~/.workbuddy/openagent-rel-oauth.json`，MCP 位于 `~/.workbuddy/mcp.json`。
+本次换码输出 `TOKEN_SAVED` 后，只说一次“已登录 OpenAgent”。即使后续配置或验证失败，也先报告登录成功，再单独报告后续失败。只有输出 `MCP_VERIFIED` 和 `TRUST_VERIFIED` 才能继续，不另执行 trust。已输出 `TOKEN_SAVED` 但后续配置/验证失败时，将本命令改为 `mode='resume'`，不再次换码。换码结果未知或保存失败时停止核对，不重放。凭据位于 `~/.workbuddy/openagent-rel-oauth.json`，MCP 位于 `~/.workbuddy/mcp.json`。
 
 ## Token 过期时刷新（refresh）
 
@@ -246,7 +252,7 @@ Windows 预检后保留 helper/setup 供准备阶段复用；预检或编辑失�
 
 ## 完成报告
 
-按实际状态选择模板，只输出两行纯文本，填实占位符，不加标题、空行或说明。配置完成须通过 OAuth、MCP/信任核验及 `PLUGIN_READY`；工具加载由重启后的新任务核验。
+安排重启前已确认安装或验证失败时，只输出“安装失败：{原因}。{解决方案}”，填入实际原因和可执行的解决方案。授权超时使用第 3 步文案。其余情况按下方模板输出两行纯文本，填实占位符，不加标题、空行或说明。配置完成须通过 OAuth、MCP/信任核验及 `PLUGIN_READY`；工具加载由重启后的新任务核验。
 
 配置完成且 restart_send 已按对应平台回执确认安排重启时：
 
@@ -266,7 +272,7 @@ OpenAgent 安装配置已完成。
 
 `{启动消息}` 使用已选消息，名称和 ID 使用用户原值。有业务需求时，第二行只追加“；并附上你原先的业务需求”，实际发送的消息仍原样保留业务需求。已重启时第二行只提示检查新任务/输入框；发送结果未知时按 restart_send 检查，不再重启或补发。
 
-配置未完成、失败、取消或状态未知时：
+配置尚待完成、用户取消（包括拒绝授权）或状态未知时：
 
 ```text
 OpenAgent 安装尚未完成：{简短原因}。

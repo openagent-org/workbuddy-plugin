@@ -17,7 +17,7 @@ Use `https://github.com/openagent-org/workbuddy-plugin.git` for the GitHub marke
 
 ## Prepare
 
-Initially say only `Installing OpenAgent…`; for browser authorization, only `Please sign in to OpenAgent in the opened page…`. No repeated progress; finish using the report templates.
+Say `Installing OpenAgent…`. Report each stage once.
 
 ```bash
 curl --version
@@ -63,39 +63,45 @@ print(f'CHALLENGE={challenge}')
 
 ## 3. Authorize (authorize)
 
-Fill `<CLIENT_ID>` and `<CHALLENGE>` and run once. Cancellation, timeout, rejection or state mismatch stops the attempt; do not restart authorization automatically.
+Run once. If waiting after `SIGN_IN_OPENED`, say “Please sign in to OpenAgent in the page that opened…” and await this process.
+
+Only on `SIGN_IN_TIMED_OUT`, end with “Sign-in is not complete yet. Reply ‘continue sign-in’ and I will reopen the sign-in page.” On that reply, repeat steps 2–3 once with the same client. Never retry automatically.
 
 ```bash
 python3 -c "
-import http.server, socketserver, urllib.parse, webbrowser, secrets
+import http.server, socketserver, urllib.parse, webbrowser, secrets, time
 state = secrets.token_urlsafe(32)
 URL = 'https://openagent.org/owner-oauth/authorize?response_type=code&client_id=<CLIENT_ID>&code_challenge=<CHALLENGE>&code_challenge_method=S256&redirect_uri=http://127.0.0.1:52961/callback&scope=agent.discover+agent.invoke+artifact.read&resource=https://openagent.org/mcp/v1/open-agent&state=' + state
 captured = {}
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if 'code' in q or 'error' in q:
-            valid = secrets.compare_digest(q.get('state', [''])[0], state) and 'error' not in q
-            captured['code'] = q.get('code', [''])[0] if valid else ''
-            self.send_response(200 if captured['code'] else 400)
-            self.end_headers()
-            self.wfile.write(b'OpenAgent authorized - you can close this tab.' if captured['code'] else b'Authorization failed - you can close this tab.')
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query, keep_blank_values=True)
+        if 'code' not in q and 'error' not in q: return
+        valid_state = secrets.compare_digest(q.get('state', [''])[0].encode(), state.encode())
+        captured['error'] = q.get('error', [''])[0] if valid_state else ''
+        captured['code'] = q.get('code', [''])[0] if valid_state and 'error' not in q else ''
+        self.send_response(200 if captured['code'] else 400)
+        self.end_headers()
+        self.wfile.write(b'OpenAgent authorized - you can close this tab.' if captured['code'] else b'Authorization failed - you can close this tab.')
     def log_message(*a): pass
 with socketserver.TCPServer(('127.0.0.1', 52961), H) as s:
     s.timeout = 1
-    webbrowser.open(URL)
-    print('Please sign in and approve access in the browser…')
-    for _ in range(180):
+    if not webbrowser.open(URL): raise SystemExit('SIGN_IN_OPEN_FAILED')
+    print('SIGN_IN_OPENED', flush=True)
+    deadline = time.monotonic() + 180
+    while not captured and time.monotonic() < deadline:
         s.handle_request()
-        if 'code' in captured: break
-if not captured.get('code'): raise SystemExit('Authorization cancelled, timed out, or state mismatched; stopping')
+if 'code' not in captured: raise SystemExit('SIGN_IN_TIMED_OUT')
+if captured['error'] == 'access_denied': raise SystemExit('SIGN_IN_CANCELLED')
+if captured['error']: raise SystemExit('SIGN_IN_FAILED')
+if not captured['code']: raise SystemExit('SIGN_IN_INVALID_CALLBACK')
 print('CODE=' + captured['code'])
 "
 ```
 
 ## 4. Exchange, configure and verify (exchange)
 
-Fill this attempt's values; run once in one tool call. The script handles tokens, MCP and trust without returning tokens to the model. Use stdin JSON, not arguments; do not split the call or edit credentials.
+Pass this attempt’s JSON via stdin once. The script keeps tokens private. Do not split the call or edit credentials.
 
 ```bash
 (
@@ -113,7 +119,7 @@ JSON
 )
 ```
 
-Require `MCP_VERIFIED` and `TRUST_VERIFIED`; no separate trust step. After `TOKEN_SAVED`, recover configuration/verification failures with `mode='resume'`. Unknown exchange or failed saving: stop and investigate, never exchange again. Credentials: `~/.workbuddy/openagent-rel-oauth.json`; MCP: `~/.workbuddy/mcp.json`.
+On `TOKEN_SAVED` during exchange, say “Signed in to OpenAgent” once. Report subsequent config/verification errors separately; use `mode='resume'`. Require `MCP_VERIFIED` and `TRUST_VERIFIED`; no separate trust step. Unknown exchange or failed save: investigate without replay. Credentials: `~/.workbuddy/openagent-rel-oauth.json`; MCP: `~/.workbuddy/mcp.json`.
 
 ## Refresh only when needed (refresh)
 
@@ -242,7 +248,7 @@ If the new task has no tools, check enabled HTTP `openagent` in `~/.workbuddy/mc
 
 ## Report completion or failure
 
-Use the matching two-line plain-text template, filling placeholders with no heading, blank line or extra text. Configuration requires OAuth, MCP/trust verification and `PLUGIN_READY`; the new task checks tool loading.
+Confirmed install/verification failure before restart scheduling: `Installation failed: {reason}. {solution}` (give an actionable fix). Sign-in timeout: see step 3. Otherwise use the matching two-line template alone. Configuration requires OAuth, MCP/trust checks and `PLUGIN_READY`. Check tools in the new task.
 
 Configuration complete and restart scheduling confirmed:
 
@@ -262,7 +268,7 @@ OpenAgent installation and configuration are complete.
 
 Keep the selected message/name/ID. With a request, append only `; also include your original business request` to line 2; preserve it verbatim in the sent message. Already restarted: direct checking the new task/input. Unknown sending: check results as above, no restart/resend.
 
-Incomplete, failed, cancelled or unknown status:
+Incomplete, cancelled, denied or unknown:
 
 ```text
 OpenAgent installation is not complete: {brief reason}.
