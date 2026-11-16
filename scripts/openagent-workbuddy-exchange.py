@@ -119,7 +119,7 @@ def main():
     client_id = code = verifier = ''
     if mode == 'exchange':
         try:
-            values = json.load(sys.stdin)
+            values = json.loads(sys.stdin.buffer.read().decode('utf-8-sig'))
             client_id, code, verifier = (values[key] for key in ('client_id', 'code', 'verifier'))
             if any(not isinstance(value, str) or not value or value.startswith('<') for value in (client_id, code, verifier)):
                 raise ValueError()

@@ -18,16 +18,31 @@ $installBase = @{
   github = 'https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel'
 }[$Source]
 
+function Resolve-Python {
+  foreach ($name in 'python3', 'python') {
+    $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $command) { continue }
+    try {
+      $lines = @(& $command.Path -I -X utf8 -c "import sys; print(sys.executable); sys.exit(sys.version_info < (3, 9))" 2>$null)
+      if ($LASTEXITCODE -ne 0 -or $lines.Count -ne 1) { continue }
+      $executable = $lines[0].Trim()
+      if ([IO.Path]::IsPathRooted($executable) -and (Test-Path -LiteralPath $executable -PathType Leaf)) { return $executable }
+    } catch { continue }
+  }
+  throw 'Python 3.9+ is required (python3 or python)'
+}
+
 if ($Stage -eq 'preflight') {
   $setup = Join-Path ([IO.Path]::GetTempPath()) ('openagent-setup-' + [guid]::NewGuid().ToString('N') + '.py')
   try {
+    $pythonExe = Resolve-Python
     curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-setup.py" -o $setup
     if ($LASTEXITCODE -ne 0) { throw 'Setup download failed' }
-    & python3 -X utf8 -B -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $setup
+    & $pythonExe -X utf8 -B -c "import ast,sys; from pathlib import Path; ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))" $setup
     if ($LASTEXITCODE -ne 0) { throw 'Setup syntax check failed' }
     try {
       $ErrorActionPreference = 'Continue'
-      $checkOutput = @(& python3 -X utf8 -B $setup --source $Source --verify-only 2>&1)
+      $checkOutput = @(& $pythonExe -X utf8 -B $setup --source $Source --verify-only 2>&1)
       $checkCode = $LASTEXITCODE
     } finally {
       $ErrorActionPreference = 'Stop'
@@ -55,14 +70,11 @@ $targetDir = Join-Path $HOME '.workbuddy'
 $restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $restartDir | Out-Null
 try {
-  $result = & python3 -X utf8 -B $setup --source $Source --verify-only
+  $pythonExe = Resolve-Python
+  $result = & $pythonExe -X utf8 -B $setup --source $Source --verify-only
   $code = $LASTEXITCODE
   $result | Write-Output
   if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
-  $pythonOutput = @(& python3 -c "import sys; assert sys.version_info >= (3,9); print(sys.executable)")
-  if ($LASTEXITCODE -ne 0 -or $pythonOutput.Count -ne 1) { throw 'Python resolution failed' }
-  $pythonExe = $pythonOutput[0].Trim()
-  if (-not [IO.Path]::IsPathRooted($pythonExe) -or -not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'Invalid Python executable' }
   $download = Join-Path $restartDir 'openagent-workbuddy-restart.py'
   curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-restart.py" -o $download
   if ($LASTEXITCODE -ne 0) { throw 'Restart script download failed' }

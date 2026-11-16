@@ -1,23 +1,21 @@
 # Install OpenAgent in WorkBuddy (REL)
 
-Confirm WorkBuddy or use the matching [guide](https://openagent.org/plugin); stop if unsure. The Agent installs; the user authorizes in the browser.
+Install the OpenAgent plugin and MCP for this WorkBuddy user, then schedule one restart to send the startup message in a new task. For other hosts use the [guide](https://openagent.org/plugin); stop if unsure.
 
 Keep codes/verifiers/tokens out of replies; never read saved credentials or MCP Authorization. Accept only `https://openagent.org/mcp/v1/open-agent`; preserve other settings and disabled states. Stop on source conflicts.
 
-Windows exchange/setup/prepare/restart use native PowerShell tool options `dangerouslyDisableSandbox=true`, `run_in_background=false`, `timeout=120000` (ms), subject to host approval. Stop if unsupported, denied or still sandboxed; never change security settings/tools to retry. Wait on unfinished calls without replaying.
-
 ## Download mirrors
 
-Preserve an existing official source; new installs use Gitee. Download published `rel` files using:
+Official `rel` sources: keep the current one if official; default to Gitee:
 
 - Gitee: `https://gitee.com/openagent-org/workbuddy-plugin/raw/rel`
 - GitHub: `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel`
 
-Use `https://github.com/openagent-org/workbuddy-plugin.git` for the GitHub marketplace. Keep download bases, source parameters (`gitee`/`github`) and marketplace URLs consistent. Only DNS, connection, timeout, interrupted transfer or HTTP 5xx permits one switch after the original call ends. Certificate, approval, 401/403/404/429/451, integrity, syntax, execution or OAuth errors stop. Discard partial files; download privately and completely before one execution. Retry only failed downloads, never completed configuration, OAuth or restart.
+GitHub marketplace: `https://github.com/openagent-org/workbuddy-plugin.git`. Match download base, source and marketplace. Switch once only after a DNS, connection, timeout, transfer interruption or HTTP 5xx failure. Stop on certificate, approval, 401/403/404/429/451, integrity, syntax, execution or OAuth errors. Discard partial files; download privately in full before running once. Retry failed downloads only.
 
 ## Prepare
 
-Say `Installing OpenAgent…`. Report each stage once.
+Say `Installing OpenAgent…` and report each stage once. Windows: use `curl.exe` and a working Python 3.9+ (`python3` or `python`) for all examples.
 
 ```bash
 curl --version
@@ -27,7 +25,7 @@ python3 --version
 
 Require Python 3.9+ and WorkBuddy launched before; uploads need Node.js 20+ with bundled dependencies.
 
-Windows: use `curl.exe`, UTF-8 and backtick continuations; keep Python `-c`. For section 4, download to a unique system temp directory, pipe single-quoted here-string JSON to Python with the selected mode, and clean up in `try/finally`. Check `$LASTEXITCODE` after each native command; stop on failure.
+Windows: use UTF-8, backticks and Python `-c`. In step 4, use a unique temp dir, pipe single-quoted here-string JSON to the selected Python/mode and clean up in `finally`. Check `$LASTEXITCODE` after each native command; stop on failure.
 
 ## 1. Register an OAuth client (register)
 
@@ -63,7 +61,7 @@ print(f'CHALLENGE={challenge}')
 
 ## 3. Authorize (authorize)
 
-Run once. If waiting after `SIGN_IN_OPENED`, say “Please sign in to OpenAgent in the page that opened…” and await this process.
+Run the listener once. It opens the browser for sign-in/approval and receives the callback; never ask for the URL. After `SIGN_IN_OPENED`, if waiting, say “Please sign in to OpenAgent in the page that opened…” and await this process.
 
 Only on `SIGN_IN_TIMED_OUT`, end with “Sign-in is not complete yet. Reply ‘continue sign-in’ and I will reopen the sign-in page.” On that reply, repeat steps 2–3 once with the same client. Never retry automatically.
 
@@ -101,7 +99,9 @@ print('CODE=' + captured['code'])
 
 ## 4. Exchange, configure and verify (exchange)
 
-Pass this attempt’s JSON via stdin once. The script keeps tokens private. Do not split the call or edit credentials.
+Pass this attempt’s JSON via stdin once. Do not split the call or edit credentials.
+
+Windows exchange/setup/prepare/restart: request native PowerShell approval with `dangerouslyDisableSandbox=true`, `run_in_background=false`, `timeout=120000` (ms). Wait for pending calls; stop if unsupported, denied or still sandboxed. Never change security settings or switch tools to retry.
 
 ```bash
 (
@@ -148,7 +148,7 @@ No `sa_` prefix is required; placeholders are not defaults. Keep the Agent and a
 
 ## Restart WorkBuddy and send once (restart_send)
 
-After OAuth/MCP initialization and `TRUST_VERIFIED`, use your platform branch. Use a file tool to JSON-serialize the full message as UTF-8 `{"message":"..."}`, preserving newlines/quotes/backslashes; pass its absolute path. Keep message text out of command arguments and logs. Use this run's official `rel` downloads and selected source. Native approvals apply; denial, missing context, timeout, syntax/argument errors stop execution.
+After OAuth/MCP setup and `TRUST_VERIFIED`, follow your platform below. `--require-existing-trust` checks the saved trust; it cannot grant it. Use a file tool to serialize the exact message as UTF-8 JSON `{"message":"..."}`; pass its absolute path, never its text, in commands or logs. Use this run’s official downloads. Stop on denied approval, missing context, timeout or syntax/argument errors.
 
 ### macOS
 
@@ -178,7 +178,7 @@ Success plus a background PID confirms scheduling. Restart may interrupt other t
 
 ### Windows: preflight, edit, prepare, schedule
 
-Follow the native PowerShell parameters above. Keep source variables, download URL, JSON source URL and `-Source` aligned. Escape path quotes as `'` → `''`.
+Use the PowerShell options in step 4. Match source variables, download/JSON URLs and `-Source`. Escape path quotes as `'` → `''`.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
