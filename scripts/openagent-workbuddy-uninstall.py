@@ -152,6 +152,7 @@ def inspect_skill(home, root, name):
         raise ValueError("无法确认 OpenAgent Skill 归属：" + str(target))
     allowed = {"SKILL.md"}
     if name == "openagent-first-task-router":
+        allowed.add("references/plan-agent-discovery.md")
         allowed.add("references/result-validation-and-delivery.md")
     if name == "openagent-search-agent":
         allowed.add("assets/close-tab.html")

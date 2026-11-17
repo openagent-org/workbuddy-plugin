@@ -1,6 +1,6 @@
 ---
 name: openagent-search-agent
-description: Use when the user asks to find, recommend, or select Agents with an explicit query, browse available Agents without a query, or an upstream business Skill requests headless capability discovery. Perform one discovery and selection protocol only; do not plan tasks, search again, or call execution tools.
+description: Use for explicit requests to find, recommend, select, or browse Agents, or for headless discovery requested by an upstream Skill. To invoke a named Agent, use openagent-run-agent if its agent_id is trusted, otherwise use openagent-first-task-router.
 ---
 
 # OpenAgent Agent Discovery

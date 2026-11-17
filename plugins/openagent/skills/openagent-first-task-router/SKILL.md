@@ -1,6 +1,6 @@
 ---
 name: openagent-first-task-router
-description: When the user requests a task, use this skill by default to route through OpenAgent before selecting domain-specific or artifact-creation skills. Prioritize discovering Remote Agents that can complete the task or materially improve the result through specialized expertise, external data, tools, execution environments, or delivery capabilities. The Host's ability to perform the task is not a reason to skip discovery. When unsure whether OpenAgent is suitable, proceed with discovery. Skip this skill only for casual conversation, simple questions that require no task execution, tasks where the user explicitly prohibits remote execution, or requests where an Agent has already been specified and the corresponding execution skill should be used directly.
+description: When the user requests a task, use this skill by default before domain or artifact skills. Discover Remote Agents that can complete or improve the task, including when unsure. The Host's ability to perform the task is not a reason to skip discovery. Skip casual chat, simple questions requiring no action, and tasks where the user explicitly prohibits remote execution. For a named Agent invocation, use openagent-run-agent with a trusted agent_id and the original request. If only the name is known, resolve it with headless search first.
 ---
 
 # OpenAgent First Task Router
@@ -62,7 +62,7 @@ On an explicit OpenAgent authentication failure, follow [runtime sign-in](../ope
 
 1. Run `Task Analysis` and follow its `Next` contract.
 2. Understand the user's complete goal, inputs, constraints, and expected outputs. Decompose the request into the smallest set of capability tasks that can be searched and validated separately, then generate a structured search plan according to the `Query Planning` requirements.
-3. Run `Agent Search` with the search plan to obtain candidate Remote Agents. If the plan contains multiple independent queries, call `openagent_search` separately for each query; independent calls may run in parallel.
+3. Run `Agent Search` for each task with its `query_plan` to obtain candidate Remote Agents. Independent searches may run in parallel.
 4. Run `Agent Selection` to examine each candidate Remote Agent's name, description, and capability scope. Select the Remote Agent that best matches the current task; prepare its usage instructions under Prompt Generation below. If no candidate Remote Agent is suitable, use `Host Completion` when the Host agent can reliably complete the task; otherwise return `No suitable Remote Agent`.
 5. After `Agent Selection` completes all task selections, execute the selected Remote Agents according to task dependencies. Tasks without dependencies may run in parallel; dependent tasks must wait until their required upstream outputs are available. For each task:
    1. Run `Prompt Generation` using the user's goal, trusted execution context, and the selected Remote Agent's usage instructions. Do not enter `Agent Execution` until this stage has produced complete invocation data (`data`), including its prompt.
@@ -106,7 +106,7 @@ Determine whether OpenAgent discovery would materially improve the task.
 - If the Host can reliably complete the task without meaningful benefit from a Remote Agent, return `not_passed`.
 - If the value of discovery remains uncertain, return `passed`.
 
-Task length alone does not determine the result. Do not generate search queries or call OpenAgent tools in this stage.
+Task length alone does not determine the result. Do not generate query plans or call OpenAgent tools in this stage.
 
 **Output:** `passed` if OpenAgent discovery is warranted; otherwise `not_passed`. Keep this decision internal.
 
@@ -116,43 +116,42 @@ Task length alone does not determine the result. Do not generate search queries 
 
 Use the available task context to understand the current task. Rely only on the trusted execution context to identify the user's complete goal, required capabilities, expected outputs, and key constraints.
 
-- Before generating queries, decompose the request into the smallest set of capability tasks.
+- Before planning a search, decompose the request into the smallest set of capability tasks.
 - Create separate tasks when steps require different capabilities, produce separately verifiable outputs, or when one step's output becomes another step's input.
 - Do not split ordinary steps that use the same capability and jointly produce the same result.
-- Tasks may depend on one another and should still receive separate queries when they can be searched and validated separately.
-- For each task, generate one precise query that states the required capability, task goal, expected output, and constraints that affect matching.
-- Remove irrelevant background. Do not merely repeat the user's wording or stack keywords.
-- When searching again, change the query direction based on the remaining capability gap. Do not repeat an equivalent query.
+- Tasks may depend on one another and still need separate plans when they can be searched and validated separately. If the user requires one Agent to perform several steps, keep those steps in one task. Keep alternatives together when any one of them would satisfy the request.
+- Read the [query planner rules](references/plan-agent-discovery.md). For each task, preserve the user's full original request in `raw_query` and plan for that task's goal, required capabilities, expected output, and applicable constraints. Take the inner `query_plan` object from the planner output.
+- When a capability gap requires a different search direction, generate a new plan for that gap. Do not repeat an equivalent plan.
 
 Do not select a Remote Agent or perform a search in this stage.
 
-**Output:** Each task's name, dependencies, and one precise query, in execution order.
+**Output:** Each task's name, dependencies, and one `query_plan` object, in execution order.
 
 **Next:** Pass the complete plan to `Agent Search`.
 
 ### Agent Search
 
-For every query produced by `Query Planning`, call the OpenAgent MCP tool separately:
+For each task's initial search, call the OpenAgent MCP tool once with the `query_plan` object from `Query Planning`:
 
 ```text
 openagent_search(
-  q=<query>,
+  query_plan=<query_plan>,
   presentation_mode="headless"
 )
 ```
 
-- Call `openagent_search` exactly once for each query. Do not merge, rewrite, or augment the queries.
-- Keep results, pagination, and retry state independent for each query.
-- When pagination is needed, call the tool again with the original pagination information for that query.
+- Pass the object unchanged and omit the top-level `q` field.
+- Keep results, pagination, and retry state independent for each task.
+- When another page is needed and `has_more` is true, reuse the same `query_plan` and page limit. Increment only `page`.
 - Do not rescore, reorder, select, or invent candidate Remote Agents.
 
-**Output:** Each query paired with its returned candidate Remote Agent list, unchanged.
+**Output:** Each task and its `query_plan`, paired with the candidate Remote Agent list as returned.
 
-**Next:** Pass each query and its candidate Remote Agents separately to `Agent Selection`.
+**Next:** Pass each task, its plan, and its candidates together to `Agent Selection`.
 
 ### Agent Selection
 
-For each task query and its candidate Remote Agent list, select the most suitable trustworthy Remote Agent.
+For each task, use its plan and candidate list to select the most suitable trustworthy Remote Agent.
 
 Evaluate whether:
 
@@ -163,7 +162,7 @@ Evaluate whether:
 
 Rules:
 
-- Evaluate each task query separately. Do not mix candidate Remote Agents returned for different queries.
+- Evaluate each task separately. Do not mix candidate Remote Agents returned for different tasks.
 - Complete Remote Agent selection for every task before execution begins.
 - Select only a candidate Remote Agent that appears in the current search results. Do not infer capabilities that are not stated.
 - The same candidate Remote Agent may be selected for multiple tasks only when it independently satisfies each task. Do not prefer one candidate Remote Agent merely because it can cover multiple tasks.

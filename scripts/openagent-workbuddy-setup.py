@@ -80,6 +80,7 @@ root = Path.home() / '.workbuddy'
 plugin = 'openagent@openagent-workbuddy'
 base = (root / 'plugins/cache/openagent-workbuddy/openagent').resolve()
 required = ['skills/openagent-' + name + '/SKILL.md' for name in 'first-task-router guide-agent search-agent run-agent query-account'.split()]
+required.append('skills/openagent-first-task-router/references/plan-agent-discovery.md')
 required.append('skills/openagent-first-task-router/references/result-validation-and-delivery.md')
 required.append('skills/openagent-login/runtime-sign-in.md')
 required.extend('skills/openagent-run-agent/scripts/' + name for name in ('cos_upload.cjs', 'cos_sdk.lock.json', 'cos_sdk.cjs.gz'))
