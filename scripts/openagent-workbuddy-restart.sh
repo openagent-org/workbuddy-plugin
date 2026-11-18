@@ -87,15 +87,48 @@ def app_executable():
     if not exe.is_file() or not os.access(exe,os.X_OK):raise RestartError('APP_EXECUTABLE_UNAVAILABLE')
     return exe
 
+def stdio_trust_key(entry):
+    """与宿主 stdio 算法一致；独立分发入口由跨入口用例校验一致性。"""
+    command, args = entry.get('command'), entry.get('args', [])
+    env, cwd = entry.get('env', {}), entry.get('cwd')
+    if (not isinstance(command, str) or not command.strip()
+            or not isinstance(args, list) or any(not isinstance(arg, str) for arg in args)
+            or not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items())
+            or (cwd is not None and not isinstance(cwd, str))):
+        raise ValueError('MCP_STDIO_CONFIG_INVALID')
+    order = lambda value: value.encode('utf-16-be')  # JavaScript 默认按 UTF-16 排序。
+    parts = [command, ','.join(sorted(args, key=order)), ','.join(sorted(env, key=order))]
+    if cwd and cwd.strip():
+        parts.append(cwd)
+    return hashlib.sha256('|'.join(parts).encode('utf-8')).hexdigest() + '::openagent'
+
+
 def verify_trust():
-    """仅核验安装程序已登记的固定来源信任；不读取 MCP 正文或自动授予其他来源信任。"""
-    path=CONFIG/'mcp-approvals.json'
-    if path.is_symlink():raise RestartError('TRUST_FILE_SYMLINK')
-    try:data=json.loads(path.read_text())
-    except (OSError,ValueError):raise RestartError('TRUST_NOT_VERIFIED') from None
-    key=hashlib.sha256(b'https://openagent.org').hexdigest()+'::openagent'
-    stamp=data.get(key) if isinstance(data,dict) else None
-    if type(stamp) is not int or stamp<=0:raise RestartError('TRUST_NOT_VERIFIED')
+    """只读核验当前 OpenAgent 配置对应的信任，不补授信任或读取凭据。"""
+    path, mcp = CONFIG / 'mcp-approvals.json', CONFIG / 'mcp.json'
+    if CONFIG.is_symlink() or path.is_symlink() or mcp.is_symlink():
+        raise RestartError('TRUST_FILE_SYMLINK')
+    try:
+        before = mcp.read_bytes()
+        entry = json.loads(before.decode('utf-8-sig'))['mcpServers']['openagent']
+        if entry.get('command'):
+            expected = [str(CONFIG / 'openagent-rel/openagent-workbuddy-token-proxy.py'),
+                        '--credential', str(CONFIG / 'openagent-rel-oauth.json')]
+            if entry.get('type', 'stdio') != 'stdio' or 'url' in entry or entry.get('args') != expected:
+                raise ValueError()
+            key = stdio_trust_key(entry)
+        elif ('command' not in entry and 'args' not in entry and entry.get('type', 'http') == 'http'
+              and entry.get('url') == 'https://openagent.org/mcp/v1/open-agent'):
+            key = hashlib.sha256(b'https://openagent.org').hexdigest() + '::openagent'
+        else:
+            raise ValueError()
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+        stamp = data.get(key) if isinstance(data, dict) else None
+        if type(stamp) is not int or stamp <= 0 or mcp.is_symlink() or mcp.read_bytes() != before:
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise RestartError('TRUST_NOT_VERIFIED') from None
+
 
 def start_app(executable):
     """直接启动二进制并显式传调试变量，不经 open 或用户 LaunchAgent。"""
@@ -177,6 +210,25 @@ def find_wb():
         time.sleep(0.5)
     return None
 
+RESTORE_TURN_JS = r'''(async sessionId=>{
+    const deadline=Date.now()+45000;
+    let timer;
+    try{
+        const moved=await Promise.race([
+            wb.navigation.goto({tab:"conversation",path:sessionId}).then(()=>true),
+            new Promise(resolve=>{timer=setTimeout(()=>resolve(false),45000);})
+        ]);
+        if(!moved)return false;
+        while(Date.now()<deadline){
+            if(wb.navigation.route==='/conversation/'+sessionId&&wb.conversations.currentId===sessionId)
+                return true;
+            await new Promise(resolve=>setTimeout(resolve,200));
+        }
+        return false;
+    }finally{clearTimeout(timer);}
+})'''
+
+
 def send_message(request):
     """通过输入状态和发送 API 提交一次消息，确认创建后导航；未知结果不补发。"""
     message=request['message']
@@ -195,45 +247,34 @@ def send_message(request):
     log('已连接 wb 渲染页')
 
     try:
-        r=c.evaluate('(async()=>{try{await wb.connectors.setCustomMcpServerEnabled("openagent",true);return "ok";}catch(e){return "err:"+(e&&e.message);}})()')
-        log('启用 openagent: %s'%r)
-        r=c.evaluate('(async()=>{try{await wb.navigation.goto({tab:"home"});return "ok";}catch(e){return "err:"+(e&&e.message);}})()')
-        log('goto home: %s'%r)
-        time.sleep(1.4)
+        ENABLE_JS=r'''(async()=>{try{
+            if(typeof wb.mcp?.setEnabled==='function'){
+                const result=await wb.mcp.setEnabled('custom-mcp:openagent',true);
+                if(result?.ok!==true)return 'rejected';
+            }else{
+                const result=await wb.connectors.setCustomMcpServerEnabled('openagent',true);
+                if(result===false||result?.ok===false||result?.success===false)return 'rejected';
+            }
+            return 'ok';
+        }catch{return 'failed';}})()'''
+        if c.evaluate(ENABLE_JS)!='ok':raise RestartError('MCP_ENABLE_NOT_CONFIRMED')
+        log('已启用 openagent')
+        # 先离开冷启动首页，避免旧首页消费者抢先领取新任务的发送指令。
+        if request.get('session_id'):
+            if c.evaluate(RESTORE_TURN_JS+'('+json.dumps(request['session_id'])+')') is not True:
+                raise RestartError('INSTALL_TURN_NOT_RESTORED')
+            log('已恢复本次安装任务页面')
 
         # 临时捕获本次输入对应的创建结果，不依赖列表顺序或历史标题。
         WATCH_JS=r'''(message=>{const api=wb.conversations;const original=api.create;const state={id:null,pending:false,api,original};const wrapped=async function(params){const text=(params.promptContentBlocks||[]).filter(b=>b.type==='text').map(b=>b.text||'').join('');const matches=text.trim()===message.trim();if(matches)state.pending=true;try{const result=await original.call(this,params);if(matches&&result?.info?.id)state.id=result.info.id;return result;}finally{if(matches)state.pending=false;}};state.wrapped=wrapped;globalThis.__wbRestartCreated=state;api.create=wrapped;return api.create===wrapped;})'''
         if not c.evaluate(WATCH_JS+'('+json.dumps(message)+')'):
             raise RestartError('无法捕获新会话，停止发送')
-        # prepareInput 等待状态应用；随后在同一 JS 执行中核对草稿并冻结发送。
-        # React provider 属于宿主内部实现，无法确认唯一首页 store 时停止，不模拟操作兜底。
-        SEND_JS=r'''(async message=>{
-            await wb.conversations.prepareInput({target:{type:"new"},contentBlocks:[{type:"text",text:message}]});
-            const stores=new Set();
-            for(const el of document.querySelectorAll('textarea,[contenteditable=""],[contenteditable="true"]')){
-                const rect=el.getBoundingClientRect();
-                if(el.offsetParent===null||rect.width<=120||rect.height<16)continue;
-                const key=Object.keys(el).find(k=>k.startsWith('__reactFiber$'));
-                for(let fiber=el[key];fiber;fiber=fiber.return){
-                    const props=fiber.memoizedProps;
-                    const store=props?.store??props?.value;
-                    if(typeof store?.api?.send==='function'&&typeof store.getSnapshot==='function'){
-                        stores.add(store);break;
-                    }
-                }
-            }
-            if(stores.size!==1)return {ok:false,reason:"input-store-not-unique"};
-            const store=[...stores][0],snapshot=store.getSnapshot(),draft=snapshot.draft;
-            if(!draft?.sessionId?.startsWith('__home__:'))return {ok:false,reason:"input-target-changed"};
-            const blocks=draft.content.blocks;
-            if(draft.references.length||blocks.some(b=>b.type!=='text')||blocks.map(b=>b.text??'').join('')!==message)
-                return {ok:false,reason:"input-draft-changed"};
-            if(snapshot.status.disabled||snapshot.status.hostDisabled||snapshot.status.phase!=='idle'||
-               draft.content.hasProcessingContent||!snapshot.capabilities.sendWired)
-                return {ok:false,reason:"input-not-ready"};
-            const result=await store.api.send();
-            return {ok:result?.ok===true};
-        })'''
+        # 公开提交入口等待当前首页应用输入并完成一次发送；由宿主校验模型、权限和草稿。
+        SEND_JS = r'''(async message=>{
+    await wb.conversations.prepareInput({target:{type:"new"},
+        contentBlocks:[{type:"text",text:message}],submitMode:"blocks"});
+    return {ok:true};
+})'''
         sent=c.evaluate(SEND_JS+'('+json.dumps(message)+')')
         if not sent or not sent.get('ok'):
             raise RestartError('SEND_API_NOT_CONFIRMED')
@@ -246,7 +287,7 @@ def send_message(request):
             if target_id:break
             time.sleep(0.5)
         if not target_id:
-            log('[!] 未确认新会话，停止；不补发消息')
+            log('[!] 提交已确认，会话定位未确认；不补发消息')
             return
         time.sleep(1)  # 让首页完成启动消息交接，再切换视图。
         log('本次新会话已创建: '+target_id)
@@ -272,6 +313,7 @@ def worker():
         log('Python 后台开始 PID='+str(os.getpid()))
         wait_for_turn(request)
         if request['session_id'] and request['old_pid'] not in app_pids():raise RestartError('TURN_APP_CHANGED')
+        verify_trust()
         exe=app_executable()
         quit_app()
         for _ in range(80):
@@ -301,7 +343,7 @@ def launch(args):
     # 已有目录只读取；重复 mkdir 也可能触发宿主对日志目录的写入审批。
     for directory in (CONFIG,LOG.parent):
         if not directory.is_dir():directory.mkdir(parents=True,exist_ok=True)
-    verify_trust();log('已核验已有固定来源信任：openagent')
+    verify_trust();log('已核验当前 OpenAgent 配置的已有信任')
     source=Path(os.environ['WB_RESTART_SOURCE']).read_text()
     source=source.split("<<'WB_RESTART_PY'\n",1)[1].rsplit('\nWB_RESTART_PY',1)[0]
     write_private(WORKER,source)

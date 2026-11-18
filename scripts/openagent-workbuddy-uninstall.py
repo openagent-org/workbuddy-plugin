@@ -48,6 +48,22 @@ MARKETPLACE_URLS = {
 }
 
 
+def stdio_trust_key(entry):
+    """与宿主 stdio 算法一致；独立分发入口由跨入口用例校验一致性。"""
+    command, args = entry.get('command'), entry.get('args', [])
+    env, cwd = entry.get('env', {}), entry.get('cwd')
+    if (not isinstance(command, str) or not command.strip()
+            or not isinstance(args, list) or any(not isinstance(arg, str) for arg in args)
+            or not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items())
+            or (cwd is not None and not isinstance(cwd, str))):
+        raise ValueError('MCP_STDIO_CONFIG_INVALID')
+    order = lambda value: value.encode('utf-16-be')  # JavaScript 默认按 UTF-16 排序。
+    parts = [command, ','.join(sorted(args, key=order)), ','.join(sorted(env, key=order))]
+    if cwd and cwd.strip():
+        parts.append(cwd)
+    return hashlib.sha256('|'.join(parts).encode('utf-8')).hexdigest() + '::openagent'
+
+
 def config_roots(home):
     """沿用宿主配置环境；无覆盖时按当前用户查找，并保留旧版清理。"""
     home = home.resolve(strict=True)
@@ -369,6 +385,7 @@ def build_plan(home, roots=None):
         boundary = Path(root.anchor)
         mcp = read_owned_file(boundary, root / "mcp.json")
         owned_http = False
+        trust_keys = {hashlib.sha256(b"https://openagent.org").hexdigest() + "::openagent"}
         if mcp:
             original = parse_json(mcp["bytes"], "MCP 配置")
             config, changed = remove_openagent_mcp_config(original, home)
@@ -376,6 +393,8 @@ def build_plan(home, roots=None):
             if changed:
                 server = original["mcpServers"]["openagent"]
                 owned_http = server.get("type") == "http" and server.get("url") in OPENAGENT_ENDPOINTS
+                if server.get("command"):
+                    trust_keys.add(stdio_trust_key(server))
         for name in OPENAGENT_SKILLS:
             owned, empty_dirs = inspect_skill(boundary, root / "skills", name)
             files.extend(owned)
@@ -393,12 +412,13 @@ def build_plan(home, roots=None):
         approvals = read_owned_file(boundary, root / "mcp-approvals.json")
         if approvals:
             config = parse_json(approvals["bytes"], "MCP 信任登记")
-            key = hashlib.sha256(b"https://openagent.org").hexdigest() + "::openagent"
-            changed = key in config
-            if changed:
-                if type(config[key]) is not int or config[key] <= 0:
-                    raise ValueError("无法确认 OpenAgent MCP 信任登记；未清理")
-                del config[key]
+            changed = False
+            for key in trust_keys:
+                if key in config:
+                    if type(config[key]) is not int or config[key] <= 0:
+                        raise ValueError("无法确认 OpenAgent MCP 信任登记；未清理")
+                    del config[key]
+                    changed = True
             mcps.append(dict(approvals, config=config, changed=changed))
         inspect_install_residue(root, files, trees)
         browser_dir = root / "browser-tools"

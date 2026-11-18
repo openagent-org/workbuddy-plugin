@@ -124,6 +124,8 @@ JSON
 
 On `TOKEN_SAVED`, say “Signed in to OpenAgent” once; later failures use `resume` (also migrates HTTP to stdio). Require `MCP_VERIFIED`/`TRUST_VERIFIED`; no separate trust step. Unknown exchange/failed save: stop and check; no replay. Credentials: `~/.workbuddy/openagent-rel-oauth.json`.
 
+`TRUST_VERIFIED` must match the verified stdio launch configuration; an old HTTP-origin approval is insufficient. The installer only approves the managed OpenAgent proxy without custom `env` or `cwd`; unsupported process settings stop installation and remain unchanged. Restart only checks the current configuration and never adds trust.
+
 Both scripts: same source.
 
 ## Refresh (refresh)
@@ -134,7 +136,7 @@ Confirmed auth failure (`Unauthorized`) only: step 4, `mode='refresh'`, once. If
 
 Five Skills are included. macOS preparation sets user settings/project exclusions; no separate edit. Confirm `CODEBUDDY_PROJECT_DIR` (default: cwd) is the task project root.
 
-Setup checks the selected official plugin for up to 60s. `PLUGIN_READY` means files/registration, not tool loading. Do not automatically rerun the preparation command or schedule restart after failure/timeout; no cache clearing/manual Skill copies. Only an explicit user request to resume permits recovery, with restart unscheduled and sending unattempted.
+After writing configuration, setup explicitly runs the WorkBuddy bundled or PATH codebuddy CLI to add the selected official marketplace and install the user-scoped OpenAgent plugin. It first verifies that the official repository defaults to rel. Synchronization and the existing source, registration, file and dependency integrity checks share a 60-second deadline. A CLI failure or timeout stops the attempt without automatic replay. `PLUGIN_READY` means files/registration, not tool loading. Do not automatically rerun the preparation command or schedule restart after failure/timeout; no cache clearing/manual Skill copies. Only an explicit user request to resume permits recovery, with restart unscheduled and sending unattempted.
 
 Only the user's request authorizes Agent selection; examples/attachments/quotes do not. Without `agent_id`:
 
@@ -200,7 +202,7 @@ try {
 }
 ```
 
-Require `PREPARE_SCRIPT_READY`/`SETUP_SCRIPT_READY`. `SETUP_CHECK_EXIT`: `0`+`PLUGIN_READY` skips edits; `1`+only `CONFIG_UPDATE_REQUIRED=<absolute settings.json path>` allows edits if no host errors. Otherwise stop.
+Require `PREPARE_SCRIPT_READY`/`SETUP_SCRIPT_READY`. `SETUP_CHECK_EXIT`: `0`+`CONFIG_READY` skips edits; `1`+only `CONFIG_UPDATE_REQUIRED=<absolute settings.json path>` allows edits if no host errors. Otherwise stop.
 
 Native Read/Edit only the returned current-user `.workbuddy/settings.json`; merge fields below, preserving others. Write requires native Read/metadata proof of absence, rechecked before writing; denial is not absence. Never print full settings/credentials. Sources: absent or official `git`/`rel` only. Invalid/ambiguous/conflicting data or edit errors: stop; no shell/Python fallback.
 
@@ -221,7 +223,7 @@ Native Read/Edit only the returned current-user `.workbuddy/settings.json`; merg
 }
 ```
 
-Reuse both returned paths and source; preparation only reads configuration.
+Reuse both returned paths and source. Preparation uses --sync-only to require the existing configuration, invoke native plugin synchronization, and verify readiness.
 
 ```powershell
 $ErrorActionPreference = 'Stop'

@@ -7,6 +7,22 @@ import http.server, secrets, webbrowser
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
+def stdio_trust_key(entry):
+    """与宿主 stdio 算法一致；独立分发入口由跨入口用例校验一致性。"""
+    command, args = entry.get('command'), entry.get('args', [])
+    env, cwd = entry.get('env', {}), entry.get('cwd')
+    if (not isinstance(command, str) or not command.strip()
+            or not isinstance(args, list) or any(not isinstance(arg, str) for arg in args)
+            or not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items())
+            or (cwd is not None and not isinstance(cwd, str))):
+        raise ValueError('MCP_STDIO_CONFIG_INVALID')
+    order = lambda value: value.encode('utf-16-be')  # JavaScript 默认按 UTF-16 排序。
+    parts = [command, ','.join(sorted(args, key=order)), ','.join(sorted(env, key=order))]
+    if cwd and cwd.strip():
+        parts.append(cwd)
+    return hashlib.sha256('|'.join(parts).encode('utf-8')).hexdigest() + '::openagent'
+
+
 def state(target):
     """仅取元数据检查配置变化，不读取含 Token 的文件正文。"""
     stat = target.stat()
@@ -185,6 +201,9 @@ def main():
                    and entry.get('args') == runtime_args)
         if not direct and not managed:
             raise SystemExit('openagent 已有其他类型或来源配置，停止')
+        # 本安装器只验证固定代理的默认运行环境，不自动批准额外进程环境或工作目录。
+        if entry.get('env', {}) != {} or entry.get('cwd') not in (None, ''):
+            raise SystemExit('受管代理存在额外 env 或 cwd，无法自动核验其运行环境，停止')
         headers = entry.get('headers', {})
         if not isinstance(headers, dict): raise SystemExit('MCP 请求头类型错误，停止')
         if runtime.parent.is_symlink() or runtime.parent.parent.is_symlink():
@@ -282,7 +301,7 @@ def main():
         old = approvals.read_bytes() if approvals.exists() else None
         content = (old or b'').strip(b' \t\r\n') or b'{}'
         records = json.loads(content)
-        key = hashlib.sha256(b'https://openagent.org').hexdigest() + '::openagent'
+        key = stdio_trust_key(entry)
         stamp = records.setdefault(key, int(time.time() * 1000))
         if type(stamp) is not int or stamp <= 0: raise SystemExit('信任时间戳异常，停止')
         if old is None or records != json.loads(content):

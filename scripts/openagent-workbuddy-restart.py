@@ -46,8 +46,6 @@ PORT = 9222
 DEFAULT_MESSAGE = 'OpenAgent 已安装，打开新用户引导'
 REQUEST = CONFIG / 'wb-relaunch-message.json'
 LOG = CONFIG / 'logs' / 'wb-relaunch.log'
-TRUST_ORIGIN = b'https://openagent.org'
-TRUST_NAME = 'openagent'
 TARGET_NAME = 'WorkBuddy.exe'
 
 
@@ -260,19 +258,47 @@ def wait_for_turn(request):
         time.sleep(1)
 
 
+def stdio_trust_key(entry):
+    """与宿主 stdio 算法一致；独立分发入口由跨入口用例校验一致性。"""
+    command, args = entry.get('command'), entry.get('args', [])
+    env, cwd = entry.get('env', {}), entry.get('cwd')
+    if (not isinstance(command, str) or not command.strip()
+            or not isinstance(args, list) or any(not isinstance(arg, str) for arg in args)
+            or not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items())
+            or (cwd is not None and not isinstance(cwd, str))):
+        raise ValueError('MCP_STDIO_CONFIG_INVALID')
+    order = lambda value: value.encode('utf-16-be')  # JavaScript 默认按 UTF-16 排序。
+    parts = [command, ','.join(sorted(args, key=order)), ','.join(sorted(env, key=order))]
+    if cwd and cwd.strip():
+        parts.append(cwd)
+    return hashlib.sha256('|'.join(parts).encode('utf-8')).hexdigest() + '::openagent'
+
+
 def verify_trust():
-    """仅核验安装程序已登记的固定来源信任；不读取 MCP 正文或自动授予其他来源信任。"""
-    path = CONFIG / 'mcp-approvals.json'
-    if path.is_symlink():
+    """只读核验当前 OpenAgent 配置对应的信任，不补授信任或读取凭据。"""
+    path, mcp = CONFIG / 'mcp-approvals.json', CONFIG / 'mcp.json'
+    if CONFIG.is_symlink() or path.is_symlink() or mcp.is_symlink():
         raise RestartError('TRUST_FILE_SYMLINK')
     try:
+        before = mcp.read_bytes()
+        entry = json.loads(before.decode('utf-8-sig'))['mcpServers']['openagent']
+        if entry.get('command'):
+            expected = [str(CONFIG / 'openagent-rel/openagent-workbuddy-token-proxy.py'),
+                        '--credential', str(CONFIG / 'openagent-rel-oauth.json')]
+            if entry.get('type', 'stdio') != 'stdio' or 'url' in entry or entry.get('args') != expected:
+                raise ValueError()
+            key = stdio_trust_key(entry)
+        elif ('command' not in entry and 'args' not in entry and entry.get('type', 'http') == 'http'
+              and entry.get('url') == 'https://openagent.org/mcp/v1/open-agent'):
+            key = hashlib.sha256(b'https://openagent.org').hexdigest() + '::openagent'
+        else:
+            raise ValueError()
         data = json.loads(path.read_text(encoding='utf-8-sig'))
-    except (OSError, ValueError):
+        stamp = data.get(key) if isinstance(data, dict) else None
+        if type(stamp) is not int or stamp <= 0 or mcp.is_symlink() or mcp.read_bytes() != before:
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         raise RestartError('TRUST_NOT_VERIFIED') from None
-    key = hashlib.sha256(TRUST_ORIGIN).hexdigest() + '::' + TRUST_NAME
-    stamp = data.get(key) if isinstance(data, dict) else None
-    if type(stamp) is not int or stamp <= 0:
-        raise RestartError('TRUST_NOT_VERIFIED')
 
 
 def verify_enabled_config():
@@ -432,57 +458,36 @@ def find_wb():
 WATCH_JS = r'''(message=>{const api=wb.conversations;const original=api.create;const state={id:null,pending:false,api,original};const wrapped=async function(params){const text=(params.promptContentBlocks||[]).filter(b=>b.type==='text').map(b=>b.text||'').join('');const matches=text.trim()===message.trim();if(matches)state.pending=true;try{const result=await original.call(this,params);if(matches&&result?.info?.id)state.id=result.info.id;return result;}finally{if(matches)state.pending=false;}};state.wrapped=wrapped;globalThis.__wbRestartCreated=state;api.create=wrapped;return api.create===wrapped;})'''
 
 SEND_JS = r'''(async message=>{
-    await wb.conversations.prepareInput({target:{type:"new"},contentBlocks:[{type:"text",text:message}]});
-    const stores=new Set();
-    for(const el of document.querySelectorAll('textarea,[contenteditable=""],[contenteditable="true"]')){
-        const rect=el.getBoundingClientRect();
-        if(el.offsetParent===null||rect.width<=120||rect.height<16)continue;
-        const key=Object.keys(el).find(k=>k.startsWith('__reactFiber$'));
-        for(let fiber=el[key];fiber;fiber=fiber.return){
-            const props=fiber.memoizedProps;
-            const store=props?.store??props?.value;
-            if(typeof store?.api?.send==='function'&&typeof store.getSnapshot==='function'){
-                stores.add(store);break;
-            }
-        }
-    }
-    if(stores.size!==1)return {ok:false,reason:"input-store-not-unique"};
-    const store=[...stores][0],snapshot=store.getSnapshot(),draft=snapshot.draft;
-    if(!draft?.sessionId?.startsWith('__home__:'))return {ok:false,reason:"input-target-changed"};
-    const blocks=draft.content.blocks;
-    if(draft.references.length||blocks.some(b=>b.type!=='text')||blocks.map(b=>b.text??'').join('')!==message)
-        return {ok:false,reason:"input-draft-changed"};
-    if(snapshot.status.disabled||snapshot.status.hostDisabled||snapshot.status.phase!=='idle'||
-       draft.content.hasProcessingContent||!snapshot.capabilities.sendWired)
-        return {ok:false,reason:"input-not-ready"};
-    const result=await store.api.send();
-    return {ok:result?.ok===true};
+    await wb.conversations.prepareInput({target:{type:"new"},
+        contentBlocks:[{type:"text",text:message}],submitMode:"blocks"});
+    return {ok:true};
 })'''
 
 
 ENABLE_JS = r'''(async()=>{
-    const out={enable:'unavailable',goto:'skip'},c=wb.connectors||{};
+    const out={enable:'unavailable',navigate:false},c=wb.connectors||{};
     let receiver,method;
-    if(typeof c.setCustomMcpServerEnabled==='function'){
-        receiver=c;method=c.setCustomMcpServerEnabled;out.enable='setCustomMcpServerEnabled';
-    }else if(typeof wb.mcp?.setEnabled==='function'){
+    if(typeof wb.mcp?.setEnabled==='function'){
         receiver=wb.mcp;method=wb.mcp.setEnabled;out.enable='mcp.setEnabled';
+    }else if(typeof c.setCustomMcpServerEnabled==='function'){
+        receiver=c;method=c.setCustomMcpServerEnabled;out.enable='setCustomMcpServerEnabled';
     }else if(typeof c.setEnabled==='function'){
         receiver=c;method=c.setEnabled;out.enable='connectors.setEnabled';
     }
     if(method){
         try{
-            const result=await method.call(receiver,"openagent",true);
+            const result=await method.call(receiver,out.enable==='mcp.setEnabled'?'custom-mcp:openagent':'openagent',true);
+            if(out.enable==='mcp.setEnabled'&&result?.ok!==true)throw new Error('MCP_ENABLE_REJECTED');
             if(result===false||result?.ok===false||result?.success===false)throw new Error('MCP_ENABLE_REJECTED');
         }catch(error){
             const text=String(error?.message??error);
             const missing=/no handler (?:registered for|for channel:)\s*['"]?(?:wb:)?(?:connectors:setCustomMcpServerEnabled|mcp:setEnabled|connectors:setEnabled)\b/i.test(text);
-            if(!missing)throw error;
+            if(!missing||out.enable==='mcp.setEnabled')throw error;
             out.enable='unavailable';
         }
     }
     if(typeof wb.navigation?.goto==='function'){
-        await wb.navigation.goto({tab:"home"});out.goto='ok';
+        out.navigate=true;
     }
     return out;
 })()'''
@@ -494,6 +499,25 @@ def _probe(client, expression, default=None):
         return client.evaluate(expression)
     except Exception:  # noqa: BLE001
         return default
+
+
+RESTORE_TURN_JS = r'''(async sessionId=>{
+    const deadline=Date.now()+45000;
+    let timer;
+    try{
+        const moved=await Promise.race([
+            wb.navigation.goto({tab:"conversation",path:sessionId}).then(()=>true),
+            new Promise(resolve=>{timer=setTimeout(()=>resolve(false),45000);})
+        ]);
+        if(!moved)return false;
+        while(Date.now()<deadline){
+            if(wb.navigation.route==='/conversation/'+sessionId&&wb.conversations.currentId===sessionId)
+                return true;
+            await new Promise(resolve=>setTimeout(resolve,200));
+        }
+        return false;
+    }finally{clearTimeout(timer);}
+})'''
 
 
 def send_message(request):
@@ -521,14 +545,17 @@ def send_message(request):
     try:
         stages = client.evaluate(ENABLE_JS)
         methods = ('setCustomMcpServerEnabled', 'mcp.setEnabled', 'connectors.setEnabled', 'unavailable')
-        if not isinstance(stages, dict) or stages.get('enable') not in methods or stages.get('goto') not in ('ok', 'skip'):
+        if not isinstance(stages, dict) or stages.get('enable') not in methods or type(stages.get('navigate')) is not bool:
             raise RestartError('MCP_ENABLE_NOT_CONFIRMED')
         if stages['enable'] == 'unavailable':
             verify_enabled_config()
             log('[i] 缺少启用 API；已核验配置开关，实际连接和工具加载仍待新任务验证')
-        if stages.get('goto') == 'ok':
-            time.sleep(1.4)
-        can_navigate = stages['goto'] == 'ok'
+        can_navigate = stages['navigate']
+        # 先离开冷启动首页，避免旧首页消费者抢先领取新任务的发送指令。
+        if request.get('session_id'):
+            if client.evaluate(RESTORE_TURN_JS + '(' + json.dumps(request['session_id']) + ')') is not True:
+                raise RestartError('INSTALL_TURN_NOT_RESTORED')
+            log('已恢复本次安装任务页面')
 
         if client.evaluate(WATCH_JS + '(' + json.dumps(message) + ')') is not True:
             raise RestartError('无法捕获新会话，停止发送')
@@ -546,7 +573,7 @@ def send_message(request):
             target_id = None
             time.sleep(0.5)
         if not target_id:
-            log('[!] 未确认新会话，停止；不补发消息')
+            log('[!] 提交已确认，会话定位未确认；不补发消息')
             return False
         time.sleep(1)
         log('本次新会话已创建: ' + str(target_id))
@@ -700,7 +727,7 @@ def launch(args):
     executable = app_executable(old_pid)
     log('目标可执行文件：%s' % executable)
     verify_trust()
-    log('已核验已有固定来源信任：openagent')
+    log('已核验当前 OpenAgent 配置的已有信任')
 
     if args.dry_run:
         log('演练模式：以下为将要执行的动作，不会真正执行')

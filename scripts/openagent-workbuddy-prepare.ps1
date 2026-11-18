@@ -1,4 +1,4 @@
-# 只读预检与准备重启脚本；配置编辑和安排重启仍由各自的独立工具调用完成。
+# 只读预检、原生插件同步与准备重启脚本；配置编辑和安排重启使用独立调用。
 param(
   [Parameter(Mandatory = $true)]
   [ValidateSet('preflight', 'prepare')]
@@ -42,7 +42,7 @@ if ($Stage -eq 'preflight') {
     if ($LASTEXITCODE -ne 0) { throw 'Setup syntax check failed' }
     try {
       $ErrorActionPreference = 'Continue'
-      $checkOutput = @(& $pythonExe -X utf8 -B $setup --source $Source --verify-only 2>&1)
+      $checkOutput = @(& $pythonExe -X utf8 -B $setup --source $Source --check-config 2>&1)
       $checkCode = $LASTEXITCODE
     } finally {
       $ErrorActionPreference = 'Stop'
@@ -50,7 +50,7 @@ if ($Stage -eq 'preflight') {
     $checkLines = @($checkOutput | ForEach-Object { $_.ToString() })
     $checkLines | Write-Output
     Write-Output ('SETUP_CHECK_EXIT=' + $checkCode)
-    $ready = $checkCode -eq 0 -and $checkLines -contains 'PLUGIN_READY'
+    $ready = $checkCode -eq 0 -and $checkLines -contains 'CONFIG_READY'
     $needsEdit = $checkCode -eq 1 -and $checkLines.Count -eq 1 -and $checkLines[0] -match '^CONFIG_UPDATE_REQUIRED=.+$'
     if (-not ($ready -or $needsEdit)) { throw 'Setup preflight failed' }
     Write-Output ('SETUP_SCRIPT_READY=' + $setup)
@@ -71,7 +71,7 @@ $restartDir = Join-Path ([IO.Path]::GetTempPath()) ('openagent-restart-' + [guid
 New-Item -ItemType Directory -Path $restartDir | Out-Null
 try {
   $pythonExe = Resolve-Python
-  $result = & $pythonExe -X utf8 -B $setup --source $Source --verify-only
+  $result = & $pythonExe -X utf8 -B $setup --source $Source --sync-only
   $code = $LASTEXITCODE
   $result | Write-Output
   if ($code -ne 0 -or $result -notcontains 'PLUGIN_READY') { throw 'Plugin verification failed' }
