@@ -109,10 +109,13 @@ print('CODE=' + captured['code'])
   mode='exchange'
   install_base='https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
   exchange_dir="$(mktemp -d "${TMPDIR:-/tmp}/openagent-exchange.XXXXXX")"
-  trap 'rm -f -- "$exchange_dir/exchange.py"; rmdir -- "$exchange_dir"' EXIT
+  trap 'rm -f -- "$exchange_dir/exchange.py" "$exchange_dir/openagent-workbuddy-token-proxy.py"; rmdir -- "$exchange_dir"' EXIT
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
     "$install_base/scripts/openagent-workbuddy-exchange.py" \
     -o "$exchange_dir/exchange.py"
+  curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+    "$install_base/scripts/openagent-workbuddy-token-proxy.py" \
+    -o "$exchange_dir/openagent-workbuddy-token-proxy.py"
   python3 "$exchange_dir/exchange.py" --mode "$mode" <<'JSON'
 {"client_id":"<CLIENT_ID>","code":"<AUTHORIZATION_CODE>","verifier":"<VERIFIER>"}
 JSON
@@ -120,6 +123,8 @@ JSON
 ```
 
 本次换码输出 `TOKEN_SAVED` 后，只说一次“已登录 OpenAgent”。即使后续配置或验证失败，也先报告登录成功，再单独报告后续失败。只有输出 `MCP_VERIFIED` 和 `TRUST_VERIFIED` 才能继续，不另执行 trust。已输出 `TOKEN_SAVED` 但后续配置/验证失败时，将本命令改为 `mode='resume'`，不再次换码。换码结果未知或保存失败时停止核对，不重放。凭据位于 `~/.workbuddy/openagent-rel-oauth.json`，MCP 位于 `~/.workbuddy/mcp.json`。
+
+安装器将代理保存到 `~/.workbuddy/openagent-rel/openagent-workbuddy-token-proxy.py`，以 stdio 接入 WorkBuddy。代理使用现有凭据访问官方 HTTPS MCP；读取卡片或查询进度遇到明确的 `404 session_not_found` 时，重建会话并最多重试一次。创建任务等写入请求收到该错误后返回失败，后续新请求可使用新连接。Token 过期仍使用下方显式刷新流程。两个脚本必须从本次同一来源完整下载后再执行；旧 HTTP 配置在 `resume` 时迁移。
 
 ## Token 过期时刷新（refresh）
 
@@ -248,7 +253,7 @@ Windows 预检后保留 helper/setup 供准备阶段复用；预检或编辑失�
 
 ## 新任务排障
 
-新任务没有工具时，检查 `~/.workbuddy/mcp.json` 中 HTTP `openagent` 已启用且 URL/请求头对应官方来源，用第 4 步 `resume` 验证。核验所需共享工具，包含结果查询、最近调用及 `openagent_run` 的布尔 `async`；不为验收调用业务 Agent。
+新任务没有工具时，检查 `~/.workbuddy/mcp.json` 中 `openagent` 已启用，`command` 指向安装使用的 Python，`args` 指向 `~/.workbuddy/openagent-rel/openagent-workbuddy-token-proxy.py` 和本用户凭据路径，用第 4 步 `resume` 验证。核验所需共享工具，包含结果查询、最近调用及 `openagent_run` 的布尔 `async`；不为验收调用业务 Agent。
 
 ## 完成报告
 

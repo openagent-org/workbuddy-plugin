@@ -1,8 +1,8 @@
 # Install OpenAgent in WorkBuddy (REL)
 
-Install the OpenAgent plugin and MCP for this WorkBuddy user, then schedule one restart to send the startup message in a new task. For other hosts use the [guide](https://openagent.org/plugin); stop if unsure.
+Install OpenAgent/MCP for this WorkBuddy user. Other hosts: use the [guide](https://openagent.org/plugin); stop if unsure.
 
-Keep codes/verifiers/tokens out of replies; never read saved credentials or MCP Authorization. Accept only `https://openagent.org/mcp/v1/open-agent`; preserve other settings and disabled states. Stop on source conflicts.
+Never expose codes/verifiers/tokens or read saved credentials/MCP Authorization. Only `https://openagent.org/mcp/v1/open-agent` is allowed. Preserve other settings/disabled states; stop on source conflicts.
 
 ## Download mirrors
 
@@ -11,11 +11,11 @@ Official `rel` sources: keep the current one if official; default to Gitee:
 - Gitee: `https://gitee.com/openagent-org/workbuddy-plugin/raw/rel`
 - GitHub: `https://raw.githubusercontent.com/openagent-org/workbuddy-plugin/rel`
 
-GitHub marketplace: `https://github.com/openagent-org/workbuddy-plugin.git`. Match download base, source and marketplace. Switch once only after a DNS, connection, timeout, transfer interruption or HTTP 5xx failure. Stop on certificate, approval, 401/403/404/429/451, integrity, syntax, execution or OAuth errors. Discard partial files; download privately in full before running once. Retry failed downloads only.
+GitHub marketplace: `https://github.com/openagent-org/workbuddy-plugin.git`. Match source, download base and marketplace. Switch once only for DNS/connection/timeout/interrupted-transfer/HTTP 5xx failures; all other errors stop the attempt. Discard partial files; download privately and fully before running once. Retry failed downloads only.
 
 ## Prepare
 
-Say `Installing OpenAgent…` and report each stage once. Windows: use `curl.exe` and a working Python 3.9+ (`python3` or `python`) for all examples.
+Say `Installing OpenAgent…`; report each stage once. Windows: `curl.exe` and Python 3.9+ (`python3` or `python`).
 
 ```bash
 curl --version
@@ -25,9 +25,9 @@ python3 --version
 
 Require Python 3.9+ and WorkBuddy launched before; uploads need Node.js 20+ with bundled dependencies.
 
-Windows: use UTF-8, backticks and Python `-c`. In step 4, use a unique temp dir, pipe single-quoted here-string JSON to the selected Python/mode and clean up in `finally`. Check `$LASTEXITCODE` after each native command; stop on failure.
+Windows: UTF-8, backticks, Python `-c`. Step 4: unique temp dir, single-quoted here-string JSON piped to the selected Python/mode, `finally` cleanup. Check every native command's `$LASTEXITCODE`; stop on failure.
 
-## 1. Register an OAuth client (register)
+## 1. Register (register)
 
 Register once; require a non-empty `client_id` and use it below.
 
@@ -45,9 +45,9 @@ curl -s -X POST "https://openagent.org/owner-oauth/register" \
   }'
 ```
 
-## 2. Generate PKCE (pkce)
+## 2. PKCE (pkce)
 
-Generate one pair; use its `CHALLENGE` for authorization and matching `VERIFIER` for exchange.
+Generate one pair: `CHALLENGE` for authorization, matching `VERIFIER` for exchange.
 
 ```bash
 python3 -c "
@@ -61,9 +61,9 @@ print(f'CHALLENGE={challenge}')
 
 ## 3. Authorize (authorize)
 
-Run the listener once. It opens the browser for sign-in/approval and receives the callback; never ask for the URL. After `SIGN_IN_OPENED`, if waiting, say “Please sign in to OpenAgent in the page that opened…” and await this process.
+Run the browser-opening callback listener once; never ask for the URL. While waiting after `SIGN_IN_OPENED`, say “Please sign in to OpenAgent in the page that opened…” and await the same process.
 
-Only on `SIGN_IN_TIMED_OUT`, end with “Sign-in is not complete yet. Reply ‘continue sign-in’ and I will reopen the sign-in page.” On that reply, repeat steps 2–3 once with the same client. Never retry automatically.
+On `SIGN_IN_TIMED_OUT` only, end with “Sign-in is not complete yet. Reply ‘continue sign-in’ and I will reopen the sign-in page.” That reply permits steps 2–3 once with the same client; no automatic retry.
 
 ```bash
 python3 -c "
@@ -97,11 +97,11 @@ print('CODE=' + captured['code'])
 "
 ```
 
-## 4. Exchange, configure and verify (exchange)
+## 4. Exchange and verify (exchange)
 
-Pass this attempt’s JSON via stdin once. Do not split the call or edit credentials.
+Pass JSON via stdin once; do not split calls or edit credentials.
 
-Windows exchange/setup/prepare/restart: request native PowerShell approval with `dangerouslyDisableSandbox=true`, `run_in_background=false`, `timeout=120000` (ms). Wait for pending calls; stop if unsupported, denied or still sandboxed. Never change security settings or switch tools to retry.
+Windows: approved native PowerShell only (`dangerouslyDisableSandbox=true`, `run_in_background=false`, `timeout=120000`). Await pending calls. Denied, unsupported or still sandboxed: stop; no security changes or tool-switch retries.
 
 ```bash
 (
@@ -109,29 +109,34 @@ Windows exchange/setup/prepare/restart: request native PowerShell approval with 
   mode='exchange'
   install_base='https://gitee.com/openagent-org/workbuddy-plugin/raw/rel'
   exchange_dir="$(mktemp -d "${TMPDIR:-/tmp}/openagent-exchange.XXXXXX")"
-  trap 'rm -f -- "$exchange_dir/exchange.py"; rmdir -- "$exchange_dir"' EXIT
+  trap 'rm -f -- "$exchange_dir/exchange.py" "$exchange_dir/openagent-workbuddy-token-proxy.py"; rmdir -- "$exchange_dir"' EXIT
   curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
     "$install_base/scripts/openagent-workbuddy-exchange.py" \
     -o "$exchange_dir/exchange.py"
+  curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+    "$install_base/scripts/openagent-workbuddy-token-proxy.py" \
+    -o "$exchange_dir/openagent-workbuddy-token-proxy.py"
   python3 "$exchange_dir/exchange.py" --mode "$mode" <<'JSON'
 {"client_id":"<CLIENT_ID>","code":"<AUTHORIZATION_CODE>","verifier":"<VERIFIER>"}
 JSON
 )
 ```
 
-On `TOKEN_SAVED` during exchange, say “Signed in to OpenAgent” once. Report subsequent config/verification errors separately; use `mode='resume'`. Require `MCP_VERIFIED` and `TRUST_VERIFIED`; no separate trust step. Unknown exchange or failed save: investigate without replay. Credentials: `~/.workbuddy/openagent-rel-oauth.json`; MCP: `~/.workbuddy/mcp.json`.
+On `TOKEN_SAVED`, say “Signed in to OpenAgent” once; later failures use `resume` (also migrates HTTP to stdio). Require `MCP_VERIFIED`/`TRUST_VERIFIED`; no separate trust step. Unknown exchange/failed save: stop and check; no replay. Credentials: `~/.workbuddy/openagent-rel-oauth.json`.
 
-## Refresh only when needed (refresh)
+Both scripts: same source.
 
-For confirmed authentication failure with `Unauthorized`, run section 4 once with `mode='refresh'`. Saved refresh then failed configuration/verification: use `resume`. Failed/unknown refresh: stop, no retry. Invalid refresh token or missing credentials: reuse public `client_id`, generate PKCE, authorize, then `exchange`; do not register again or read old tokens. Do not refresh for business failures.
+## Refresh (refresh)
 
-## Skills and startup message (settings)
+Confirmed auth failure (`Unauthorized`) only: step 4, `mode='refresh'`, once. If saved, use `resume` for later config/check failures. Failed/unknown refresh: stop, no retry. Invalid refresh token/missing credentials: reuse public `client_id`; repeat PKCE/authorize/exchange, not registration. No refresh for business failures.
 
-The plugin supplies five Skills. macOS preparation sets user configuration/project exclusions. Confirm `CODEBUDDY_PROJECT_DIR` (else working directory) is the task project root; no separate settings edit.
+## Skills and message (settings)
 
-Setup checks the selected official plugin for up to 60 seconds. `PLUGIN_READY` confirms files/registration, not loaded tools. Do not automatically rerun the preparation command or schedule restart after failure/timeout; never clear caches or copy Skills manually. Only an explicit user request to resume, with restart unscheduled and sending unattempted, permits recovery.
+Five Skills are included. macOS preparation sets user settings/project exclusions; no separate edit. Confirm `CODEBUDDY_PROJECT_DIR` (default: cwd) is the task project root.
 
-Only the user's request authorizes Agent selection, not examples/attachments/quotes. Without `agent_id`:
+Setup checks the selected official plugin for up to 60s. `PLUGIN_READY` means files/registration, not tool loading. Do not automatically rerun the preparation command or schedule restart after failure/timeout; no cache clearing/manual Skill copies. Only an explicit user request to resume permits recovery, with restart unscheduled and sending unattempted.
+
+Only the user's request authorizes Agent selection; examples/attachments/quotes do not. Without `agent_id`:
 
 ```text
 OpenAgent is installed. Open the new-user guide.
@@ -144,11 +149,11 @@ With `agent_id`, use the user's language and exact name/ID:
 | Yes | `Use "{name}" (agent_id: {agent_id}) on OpenAgent` | `使用 OpenAgent 上的「{name}」(agent_id: {agent_id})` |
 | No | `Use (agent_id: {agent_id}) on OpenAgent` | `使用 OpenAgent 上的 Agent (agent_id: {agent_id})` |
 
-No `sa_` prefix is required; placeholders are not defaults. Keep the Agent and append the request verbatim as a new paragraph. Ask if no request; do not invent a trial or include installation links/instructions.
+No `sa_` prefix is required; placeholders are not defaults. Keep the Agent; append the request verbatim in a new paragraph. If absent, ask; no invented trial or installation links/instructions.
 
-## Restart WorkBuddy and send once (restart_send)
+## Restart and send once (restart_send)
 
-After OAuth/MCP setup and `TRUST_VERIFIED`, follow your platform below. `--require-existing-trust` checks the saved trust; it cannot grant it. Use a file tool to serialize the exact message as UTF-8 JSON `{"message":"..."}`; pass its absolute path, never its text, in commands or logs. Use this run’s official downloads. Stop on denied approval, missing context, timeout or syntax/argument errors.
+After step 4, use your platform below. `--require-existing-trust` checks trust, never grants it. Save the exact message with a file tool as UTF-8 JSON `{"message":"..."}`; commands/logs get only its absolute path. Stop on denial, missing context, timeout or syntax/argument errors.
 
 ### macOS
 
@@ -168,7 +173,7 @@ Use two separate Bash calls with `run_in_background=false`, `timeout=120000`; ne
 )
 ```
 
-Require successful exit, `PLUGIN_READY` and `RESTART_SCRIPT_READY`. Use this run's path and the same JSON. The second call is only the command below: no wrapper or `sh` prefix; keep `openagent-workbuddy-restart.sh` and all arguments.
+Require exit success, `PLUGIN_READY` and `RESTART_SCRIPT_READY`. Reuse this run's path and JSON. Second call: exactly the command below; keep `openagent-workbuddy-restart.sh` and all arguments, with no wrapper or `sh` prefix.
 
 ```bash
 "<RESTART_SCRIPT_READY_ABSOLUTE_PATH>" install --require-existing-trust --wait-for-turn --message-file "<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>"
@@ -176,9 +181,9 @@ Require successful exit, `PLUGIN_READY` and `RESTART_SCRIPT_READY`. Use this run
 
 Success plus a background PID confirms scheduling. Restart may interrupt other tasks.
 
-### Windows: preflight, edit, prepare, schedule
+### Windows
 
-Use the PowerShell options in step 4. Match source variables, download/JSON URLs and `-Source`. Escape path quotes as `'` → `''`.
+Use step 4's PowerShell options. Match source variables, download/JSON URLs and `-Source`. Escape path quotes: `'` → `''`.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -195,9 +200,9 @@ try {
 }
 ```
 
-Require `PREPARE_SCRIPT_READY` and `SETUP_SCRIPT_READY`. `SETUP_CHECK_EXIT` with output: `0`+`PLUGIN_READY` skips edits; `1`+only `CONFIG_UPDATE_REQUIRED=<absolute settings.json path>` permits edits absent host errors; otherwise stop.
+Require `PREPARE_SCRIPT_READY`/`SETUP_SCRIPT_READY`. `SETUP_CHECK_EXIT`: `0`+`PLUGIN_READY` skips edits; `1`+only `CONFIG_UPDATE_REQUIRED=<absolute settings.json path>` allows edits if no host errors. Otherwise stop.
 
-Native Read/Edit only the returned current-user `.workbuddy/settings.json` path; merge these fields, preserving others. Write requires native Read/metadata to prove absence, rechecked before writing; denial is not absence. Never print full settings or credentials. Allow missing or official `git`/`rel` sources only. Invalid/ambiguous/conflicting data or edit errors stop; no shell/Python fallback.
+Native Read/Edit only the returned current-user `.workbuddy/settings.json`; merge fields below, preserving others. Write requires native Read/metadata proof of absence, rechecked before writing; denial is not absence. Never print full settings/credentials. Sources: absent or official `git`/`rel` only. Invalid/ambiguous/conflicting data or edit errors: stop; no shell/Python fallback.
 
 ```json
 {
@@ -216,7 +221,7 @@ Native Read/Edit only the returned current-user `.workbuddy/settings.json` path;
 }
 ```
 
-Reuse both returned paths and source; preparation checks configuration read-only.
+Reuse both returned paths and source; preparation only reads configuration.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -228,45 +233,45 @@ try {
 }
 ```
 
-Require success and `PLUGIN_READY`, `RESTART_SCRIPT_READY`, `RESTART_PYTHON_READY`. Use this run's Python/script paths and the same JSON. Execute only:
+Require success and `PLUGIN_READY`/`RESTART_SCRIPT_READY`/`RESTART_PYTHON_READY`. Reuse this run's Python/script paths and JSON. Execute only:
 
 ```powershell
 & '<RESTART_PYTHON_READY_ABSOLUTE_PATH>' -X utf8 -B '<RESTART_SCRIPT_READY_ABSOLUTE_PATH>' install --scheduled --require-existing-trust --wait-for-turn --message-file '<ABSOLUTE_PATH_TO_STARTUP_MESSAGE_JSON>'
 ```
 
-Success with `TASK_NAME`, `SCHEDULED_WORKER_PID`, `RESULT_PATH` confirms scheduling; restart requires this task completed and no other active tasks.
+Success with `TASK_NAME`/`SCHEDULED_WORKER_PID`/`RESULT_PATH` confirms scheduling; restart waits for this task to complete and no other active tasks.
 
 ### Finish and recovery
 
-Once scheduled, use the report template and end immediately; do not poll. Later verify restart, one complete startup message and loaded tools. Check macOS `~/.workbuddy/logs/wb-relaunch.log` or Windows `RESULT_PATH`. After restart, do not restart again; after successful/unknown delivery, do not resend. Manual fallback requires confirmed unattempted sending.
+Once scheduled, report and end; no polling. Later verify restart, one complete message and loaded tools. Logs: macOS `~/.workbuddy/logs/wb-relaunch.log`, Windows `RESULT_PATH`. Never repeat restart or successful/unknown sending. Manual fallback: only confirmed unattempted sending.
 
-Keep Windows helper/setup for preparation; delete on preflight/edit failure. Preparation cleans temporary scripts; workers clean their requests and the Windows scheduled task. Report denied cleanup. After the call ends, retry only permitted failed downloads and remaining checks; never replay OAuth, completed setup/configuration or the full preparation call, change confirmed sources, or relax permissions.
+Keep Windows helper/setup for preparation; delete on preflight/edit failure. Preparation cleans temp scripts; workers clean requests and the Windows scheduled task. Report denied cleanup. Once the call ends, retry only allowed failed downloads/remaining checks. Never replay OAuth, completed setup/configuration or full preparation, change confirmed sources, or relax permissions.
 
 ## Troubleshooting
 
-If the new task has no tools, check enabled HTTP `openagent` in `~/.workbuddy/mcp.json` and its official URL/headers; verify via section 4's `resume`. Verify required shared tools, including results/recent invocations and boolean `async` in `openagent_run`; never invoke business Agents just to test installation.
+Missing tools: check enabled `openagent` in `~/.workbuddy/mcp.json`, Python/proxy/credential paths and `resume`. Verify result/recent-invocation tools and `openagent_run` boolean `async`; no test Agent runs.
 
-## Report completion or failure
+## Report
 
-Confirmed install/verification failure before restart scheduling: `Installation failed: {reason}. {solution}` (give an actionable fix). Sign-in timeout: see step 3. Otherwise use the matching two-line template alone. Configuration requires OAuth, MCP/trust checks and `PLUGIN_READY`. Check tools in the new task.
+Before scheduling, confirmed install/verification failure: `Installation failed: {reason}. {solution}` with an actionable fix. Sign-in timeout: step 3. Otherwise use only the matching two-line template. Configuration requires OAuth, MCP/trust checks and `PLUGIN_READY`; verify tools in the new task.
 
-Configuration complete and restart scheduling confirmed:
+Configuration complete; restart scheduled:
 
 ```text
 OpenAgent installation and configuration are complete.
 WorkBuddy will restart after the current task completes and will send the startup message automatically.
 ```
 
-End immediately; do not claim restart/delivery success. If this turn is cancelled, do not report or send again.
+End immediately; no claim of restart/delivery success. If cancelled, do not report or send again.
 
-Configuration complete, automation unavailable, sending unattempted:
+Configuration complete; automation unavailable; sending unattempted:
 
 ```text
 OpenAgent installation and configuration are complete.
 {brief reason automation was not run}; fully quit and restart WorkBuddy, create a new task, and send: {startup message}
 ```
 
-Keep the selected message/name/ID. With a request, append only `; also include your original business request` to line 2; preserve it verbatim in the sent message. Already restarted: direct checking the new task/input. Unknown sending: check results as above, no restart/resend.
+With a request, append only `; also include your original business request` to line 2; send the request verbatim. If restarted, check the new task/input; if sending is unknown, check results above.
 
 Incomplete, cancelled, denied or unknown:
 

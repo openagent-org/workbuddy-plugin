@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """第 4 步单进程安装：Token 仅在程序和私有文件中流转，不访问其他客户端。"""
 
-import argparse, sys
+import argparse, ast, subprocess, sys
 import base64, hashlib, json, math, os, tempfile, time, urllib.error, urllib.parse, urllib.request
 import http.server, secrets, webbrowser
 from contextlib import contextmanager, ExitStack
@@ -24,6 +24,33 @@ def save(target, data, before, permissions=0o600):
             raise SystemExit('文件已被其他进程修改，停止并重新检查')
         os.replace(temporary, target)
         return stamp
+
+def runtime_bytes(path):
+    """下载入口同目录的受管 runtime 必须可解析，校验不执行脚本。"""
+    if path.is_symlink() or path.parent.is_symlink():
+        raise SystemExit('代理路径包含符号链接，停止')
+    source = path.read_bytes()
+    tree = ast.parse(source)
+    compile(tree, str(path), 'exec')
+    if not any(isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+            and target.id == 'OPENAGENT_RUNTIME_ID' for target in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value == 'openagent-workbuddy-token-proxy-v1' for node in tree.body):
+        raise SystemExit('无法确认 OpenAgent 代理文件归属，停止')
+    return source
+
+def install_runtime(target, source, before):
+    """原子安装校验后的 runtime；失败后 resume 可以重复执行。"""
+    if target.parent.is_symlink() or target.parent.parent.is_symlink():
+        raise SystemExit('代理路径包含符号链接，停止')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.openagent-', dir=target.parent) as directory:
+        temporary = Path(directory) / target.name
+        temporary.write_bytes(source)
+        temporary.chmod(0o600)
+        if target.is_symlink() or (target.read_bytes() if target.exists() else None) != before:
+            raise SystemExit('代理文件已被其他进程修改，停止并重新检查')
+        os.replace(temporary, target)
 
 @contextmanager
 def sign_in(saved, url, scope):
@@ -129,6 +156,8 @@ def main():
     url = 'https://openagent.org/mcp/v1/open-agent'
     path = Path.home() / '.workbuddy' / 'mcp.json'
     credential = path.with_name('openagent-rel-oauth.json')
+    runtime = path.parent / 'openagent-rel' / 'openagent-workbuddy-token-proxy.py'
+    runtime_args = [str(runtime), '--credential', str(credential)]
     scope = 'agent.discover agent.invoke artifact.read'
     stage = '检查配置'
     sign_in_authorized = False
@@ -136,21 +165,35 @@ def main():
 
     try:
         if mode not in ('exchange', 'resume', 'refresh', 'sign-in'): raise SystemExit('安装模式无效，停止')
-        if path.is_symlink() or credential.is_symlink(): raise SystemExit('配置或凭据文件是符号链接，停止')
+        if path.is_symlink() or credential.is_symlink() or path.parent.is_symlink():
+            raise SystemExit('配置或凭据路径包含符号链接，停止')
         mcp_stamp = state(path) if path.exists() else None
         before = path.read_bytes() if path.exists() else None
         data = json.loads(before) if before is not None else {}
-        if mode == 'sign-in' and data.get('mcpServers', {}).get('openagent', {}).get('url') != url:
+        servers = data.setdefault('mcpServers', {})
+        if mode == 'sign-in' and 'openagent' not in servers:
             raise SystemExit('运行时登录要求已有当前 REL 的 OpenAgent MCP 配置，停止')
-        entry = data.setdefault('mcpServers', {}).setdefault('openagent', {})
+        entry = servers.setdefault('openagent', {})
         if mode == 'sign-in' and entry.get('disabled') is True:
             raise SystemExit('OpenAgent 连接已禁用，停止；请先在 WorkBuddy 中启用连接')
-        if ('command' in entry or 'args' in entry or entry.get('type', 'http') != 'http'
-                or entry.get('url', url) != url):
+        direct = ('command' not in entry and 'args' not in entry
+                  and entry.get('type', 'http') == 'http' and entry.get('url', url) == url)
+        if mode == 'sign-in' and entry.get('url') != url:
+            direct = False
+        managed = (entry.get('type', 'stdio') == 'stdio' and 'url' not in entry
+                   and isinstance(entry.get('command'), str) and entry['command'].strip()
+                   and entry.get('args') == runtime_args)
+        if not direct and not managed:
             raise SystemExit('openagent 已有其他类型或来源配置，停止')
-        headers = entry.setdefault('headers', {})
+        headers = entry.get('headers', {})
         if not isinstance(headers, dict): raise SystemExit('MCP 请求头类型错误，停止')
+        if runtime.parent.is_symlink() or runtime.parent.parent.is_symlink():
+            raise SystemExit('代理路径包含符号链接，停止')
+        source = runtime_bytes(Path(__file__).with_name('openagent-workbuddy-token-proxy.py'))
+        previous_runtime = runtime_bytes(runtime) if runtime.exists() or runtime.is_symlink() else None
         saved = credential.read_bytes() if credential.exists() else None
+        if saved is not None and json.loads(saved).get('resource') != url:
+            raise SystemExit('已有凭据不属于当前 REL，停止')
         if mode == 'sign-in':
             stage = '登录授权'
             client_id, code, verifier = cleanup.enter_context(sign_in(saved, url, scope))
@@ -201,32 +244,31 @@ def main():
         if not isinstance(token.get('access_token'), str) or not token['access_token'].strip():
             raise SystemExit('私有凭据缺少有效 Token，停止')
         stage = '配置 MCP'
-        for key in list(headers):
-            if key.lower() == 'x-oasn-client-source': del headers[key]
-        headers.update({'X-OASN-Client-Source': 'workbuddy', 'Authorization': 'Bearer ' + token['access_token'],
-            'X-OASN-MCP-Content-Mode': 'text-compatible', 'X-OASN-MCP-Legacy-SSE': 'enabled'})
-        entry.update({'type': 'http', 'url': url, 'timeout': 86400000})
+        install_runtime(runtime, source, previous_runtime)
+        headers = {key: value for key, value in headers.items() if key.lower() not in {
+            'authorization', 'x-oasn-client-source', 'x-oasn-mcp-content-mode', 'x-oasn-mcp-legacy-sse'}}
+        entry.pop('url', None)
+        entry.pop('headers', None)
+        if headers: entry['headers'] = headers
+        entry.update({'type': 'stdio', 'command': sys.executable, 'args': runtime_args, 'timeout': 86400000})
         if before is not None and data == json.loads(before) and path.stat().st_mode & 0o777 == 0o600:
             print('CONFIG_UNCHANGED')
         else:
             mcp_stamp = save(path, data, before)
             print('CONFIG_WRITTEN')
         stage = '验证连接'
-        request = urllib.request.Request(url, data=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+        initialize = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
             'params': {'protocolVersion': '2025-11-25', 'capabilities': {},
-                       'clientInfo': {'name': 'workbuddy', 'version': '1.0'}}}).encode(),
-            headers={'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', **headers})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            if 'text/event-stream' in response.headers.get('Content-Type', ''):
-                lines, result = [], None
-                for line in response:
-                    line = line.decode().rstrip('\r\n')
-                    if line.startswith('data:'): lines.append(line[5:].lstrip())
-                    elif not line and lines:
-                        result = json.loads('\n'.join(lines))
-                        if result.get('id') == 1: break
-                        lines = []
-            else: result = json.load(response)
+                       'clientInfo': {'name': 'workbuddy', 'version': '1.0'}}}
+        try:
+            verified = subprocess.run([entry['command'], *runtime_args],
+                input=json.dumps(initialize) + '\n', text=True, encoding='utf-8', capture_output=True, timeout=40)
+        except subprocess.TimeoutExpired:
+            raise SystemExit('代理初始化超时，停止；使用 resume 恢复') from None
+        if verified.returncode:
+            raise SystemExit('代理初始化失败，停止；使用 resume 恢复')
+        responses = [json.loads(line) for line in verified.stdout.splitlines() if line.strip()]
+        result = next((item for item in responses if isinstance(item, dict) and item.get('id') == 1), None)
         if not isinstance(result, dict) or result.get('id') != 1 or 'error' in result:
             raise SystemExit('MCP 初始化失败，停止；使用 resume 恢复，不重复交换 Token')
         if not isinstance(result.get('result', {}).get('protocolVersion'), str) or not isinstance(result['result'].get('capabilities'), dict):
@@ -255,7 +297,7 @@ def main():
             raise SystemExit('OpenAgent 已完成授权，配置核验被中断，停止；不重放换码请求') from None
         print('SIGN_IN_CANCELLED', flush=True)
         raise SystemExit('用户已中止 OpenAgent 登录流程，停止；不重放换码请求') from None
-    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, SyntaxError):
         raise SystemExit(stage + '失败，停止；不输出凭据或服务端响应；已保存凭据时使用 resume 恢复，否则核对授权结果，不重放换码或刷新请求') from None
     finally:
         cleanup.close()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """可独立下载的 WorkBuddy OpenAgent 卸载器；仅依赖 Python 3.9+ 标准库。"""
 
+import ast
 import copy
 import errno
 import hashlib
@@ -427,9 +428,17 @@ def inspect_profile(root, boundary, directory, filename, files, directories, *, 
     if proxy:
         content = proxy["bytes"].decode("utf-8")
         base = re.search(r'^OASN_BASE_URL = "([^"]+)"', content, re.MULTILINE)
-        if (not content.startswith("#!/usr/bin/env python3") or "OPENAGENT_ENDPOINT" not in content
-                or "class TokenManager" not in content or not base
-                or not any(endpoint.startswith(base[1] + "/mcp/v1/") for endpoint in OPENAGENT_ENDPOINTS)):
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            raise ValueError("无法确认代理文件归属：" + str(proxy["target"])) from None
+        runtime_marker = any(isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+            and target.id == "OPENAGENT_RUNTIME_ID" for target in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value == "openagent-workbuddy-token-proxy-v1" for node in tree.body)
+        legacy_proxy = ("OPENAGENT_ENDPOINT" in content and "class TokenManager" in content and base
+                        and any(endpoint.startswith(base[1] + "/mcp/v1/") for endpoint in OPENAGENT_ENDPOINTS))
+        if not content.startswith("#!/usr/bin/env python3") or not (runtime_marker or legacy_proxy):
             raise ValueError("无法确认代理文件归属：" + str(proxy["target"]))
         files.append(proxy)
         directories.append(proxy_dir)
