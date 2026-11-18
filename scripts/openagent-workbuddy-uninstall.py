@@ -8,12 +8,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+from xml.parsers.expat import ExpatError
 
 OPENAGENT_ENDPOINTS = (
     "https://openagent.org/mcp/v1/open-agent",
@@ -29,7 +31,13 @@ PROFILES = (
 )
 OAUTH_FILE_ALIASES = (
     "openagent_oauth.json", "oasn-openagent-credentials.json",
-    "openagent-client.json", ".openagent-oauth.json",
+    "openagent-client.json", ".openagent-oauth.json", ".openagent_oauth_state.json",
+)
+INSTALL_MESSAGES = (
+    ".openagent-launch-message.json", ".openagent-message.json", ".openagent-rel-start-message.json",
+    ".openagent-restart-message.json", ".openagent-start-message.json",
+    "openagent-install-message.json", "openagent-launch-message.json", "openagent-restart-message.json",
+    "openagent-start-message.json", "openagent-startup-message.json", "openagent-workbuddy-message.json",
 )
 MARKETPLACE = "openagent-workbuddy"
 PLUGIN_ID = "openagent@" + MARKETPLACE
@@ -355,7 +363,7 @@ def remaining_native(plan):
 
 def build_plan(home, roots=None):
     """所有归属检查先于确认、原生 CLI 和个人文件写入。"""
-    mcps, files, directories = [], [], []
+    mcps, files, directories, trees = [], [], [], {}
     roots = config_roots(home) if roots is None else roots
     for root in roots:
         boundary = Path(root.anchor)
@@ -382,6 +390,17 @@ def build_plan(home, roots=None):
             inspect_profile(root, boundary, directory, filename, files, directories, owned_http=owned_http)
         for filename in OAUTH_FILE_ALIASES:
             inspect_credential(root, boundary, filename, files)
+        approvals = read_owned_file(boundary, root / "mcp-approvals.json")
+        if approvals:
+            config = parse_json(approvals["bytes"], "MCP 信任登记")
+            key = hashlib.sha256(b"https://openagent.org").hexdigest() + "::openagent"
+            changed = key in config
+            if changed:
+                if type(config[key]) is not int or config[key] <= 0:
+                    raise ValueError("无法确认 OpenAgent MCP 信任登记；未清理")
+                del config[key]
+            mcps.append(dict(approvals, config=config, changed=changed))
+        inspect_install_residue(root, files, trees)
         browser_dir = root / "browser-tools"
         for name in ("close-tab.html", "close-now.html", "close-all-tabs.html"):
             page = read_owned_file(boundary, browser_dir / name)
@@ -395,7 +414,164 @@ def build_plan(home, roots=None):
                     raise ValueError("无法确认浏览器关闭页面归属：" + str(page["target"]))
                 files.append(page)
                 directories.append(browser_dir)
-    return {"mcps": mcps, "files": files, "directories": list(dict.fromkeys(directories))}
+    launches = inspect_launch_agents(home, roots)
+    files.extend(launches)
+    return {"mcps": mcps, "files": files, "directories": list(dict.fromkeys(directories)),
+            "trees": trees, "launches": launches}
+
+
+def install_message(source, *, worker=False):
+    """固定安装消息文件仍须核对结构和 OpenAgent 标记，不回显正文。"""
+    value = parse_json(source, "安装启动消息")
+    keys = {"message", "session_id", "old_pid"} if worker else {"message"}
+    if (set(value) != keys or not isinstance(value.get("message"), str)
+            or "openagent" not in value["message"].lower()
+            or (worker and (not isinstance(value["session_id"], str) or type(value["old_pid"]) is not int))):
+        raise ValueError("无法确认 OpenAgent 安装启动消息归属；未清理")
+
+
+def inspect_install_residue(root, files, trees):
+    """清理已知临时文件；不按 openagent 子串扫描删除备份或自写脚本。"""
+    boundary = Path(root.anchor)
+    if safe_stat(boundary, root) is None:
+        return
+    names = set(INSTALL_MESSAGES)
+    names.update(p.name for p in root.iterdir() if re.fullmatch(
+        r"openagent-startup-message-\d{8}T\d{4}\.json|\.openagent-rel-start-message-\d{2}-\d{2}\.json", p.name))
+    for name in sorted(names | {"wb-relaunch-message.json"}):
+        file = read_owned_file(boundary, root / name)
+        if file:
+            install_message(file["bytes"], worker=name == "wb-relaunch-message.json")
+            files.append(file)
+    for name in ("wb-relaunch.py", "openagent-workbuddy-restart.sh"):
+        file = read_owned_file(boundary, root / name)
+        if not file:
+            continue
+        source = file["bytes"].decode("utf-8")
+        if name == "wb-relaunch.py":
+            try:
+                ast.parse(source)
+            except SyntaxError:
+                raise ValueError("无法确认 OpenAgent 重启助手归属；未清理") from None
+            owned = all(marker in source for marker in (
+                "WORKER=CONFIG/'wb-relaunch.py'", "REQUEST=CONFIG/'wb-relaunch-message.json'",
+                "DEFAULT_MESSAGE='OpenAgent 已安装，打开新用户引导'", "def worker():"))
+        else:
+            owned = source.startswith("#!/") and "OpenAgent" in source and (
+                "WB_RESTART_PY" in source or "openagent-restart" in source)
+        if not owned:
+            raise ValueError("无法确认 OpenAgent 重启助手归属；未清理")
+        files.append(file)
+    for name in (".openagent-pkce", "tmp-openagent", "openagent-restart"):
+        target = root / name
+        snapshot = inspect_tree(root, target)
+        for path, metadata in snapshot.items():
+            if path == target:
+                continue
+            relative = path.relative_to(target)
+            is_file = metadata[0] == "file"
+            if name == ".openagent-pkce":
+                allowed = is_file and relative.as_posix() in {"pkce.env", "code.env"}
+                if allowed:
+                    lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+                    fields = [re.fullmatch(r"(?:export )?([A-Za-z_]+)=(.+)", line) for line in lines]
+                    allowed = bool(fields) and all(field and field[1].lower() in {
+                        "code_verifier", "code_challenge", "verifier", "challenge", "state", "auth_code", "code",
+                    } for field in fields)
+            elif name == "tmp-openagent":
+                allowed = is_file and relative.as_posix() == "message.json"
+                if allowed:
+                    install_message(path.read_bytes())
+            else:
+                run_name = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", relative.parts[0])
+                if is_file:
+                    allowed = ((len(relative.parts) == 1 and path.name in {"restart.sh", "worker.lock", "message.json"})
+                               or (len(relative.parts) == 2 and run_name and path.name in {
+                                   "status.json", "request.json", "worker.log", "launchd-error.json", "launcher",
+                                   "helper.sh", "relaunch.sh", "handoff.sh", "worker.sh", "claimed",
+                               }))
+                    if allowed and path.suffix == ".json":
+                        if path.name == "message.json":
+                            install_message(path.read_bytes())
+                        else:
+                            parse_json(path.read_bytes(), "OpenAgent 重启记录")
+                    if allowed and path.suffix == ".sh":
+                        source = path.read_bytes()
+                        allowed = source.startswith(b"#!/") and b"openagent" in source.lower()
+                else:
+                    allowed = run_name and (len(relative.parts) == 1 or (
+                        len(relative.parts) == 2 and path.name == "claimed" and not any(path.iterdir())))
+            if not allowed:
+                raise ValueError("安装临时目录中存在未知文件，停止清理：" + str(path))
+        trees.update(snapshot)
+
+
+def inspect_launch_agents(home, roots):
+    """只接纳固定前缀且参数指向已识别配置目录内重启脚本的 macOS 启动项。"""
+    directory = home / "Library/LaunchAgents"
+    if safe_stat(home, directory) is None:
+        return []
+    result = []
+    prefix = "com.openagent.wb-restart."
+    for path in sorted(directory.glob(prefix + "*.plist")):
+        file = read_owned_file(home, path)
+        if file is None:
+            raise RuntimeError("重启启动项在检查期间变化；未继续卸载")
+        try:
+            value = plistlib.loads(file["bytes"])
+        except (ValueError, plistlib.InvalidFileException, ExpatError):
+            raise ValueError("OpenAgent 重启启动项格式无效；未清理") from None
+        identifier = path.stem[len(prefix):]
+        expected = []
+        for root in roots:
+            run = root / "openagent-restart" / identifier
+            expected.extend((["/bin/sh", str(run / "relaunch.sh")],
+                             ["/bin/sh", str(run / "worker.sh"), "--worker", str(run)]))
+        if (not isinstance(value, dict) or value.get("Label") != path.stem
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier)
+                or value.get("ProgramArguments") not in expected or "Program" in value):
+            raise ValueError("OpenAgent 重启启动项来源冲突；未清理")
+        result.append(dict(file, label=value["Label"]))
+    return result
+
+
+def stop_restart_tasks(plan):
+    """先确认独立助手已退出，再停用已核实启动项；命令失败或回读未知均不继续删除。"""
+    workers = {str(f["target"]) for f in plan["files"] if f["target"].name in {
+        "wb-relaunch.py", "openagent-workbuddy-restart.sh"}}
+    legacy_workers = {str(p) for p in plan["trees"] if p.suffix == ".sh"}
+    if not workers and not legacy_workers and not plan["launches"]:
+        return
+    if sys.platform != "darwin":
+        raise RuntimeError("发现 macOS 重启残留，请在 macOS 核对进程和启动项后卸载")
+
+    def run(args):
+        try:
+            result = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            raise RuntimeError("重启任务检查或停用失败；未继续卸载") from None
+        if result.returncode:
+            raise RuntimeError("重启任务检查或停用失败；未继续卸载")
+        return result.stdout
+
+    def require_stopped(paths):
+        if not paths:
+            return
+        for line in run(["ps", "-axo", "pid=,command="]).splitlines():
+            # ps 会把 argv 展平成文本；完整路径可能含空格，不能按空格拆开后比较。
+            if any(re.search(r"(?:^|\s)[\"']?" + re.escape(worker) + r"[\"']?(?:\s|$)", line)
+                   for worker in paths):
+                raise RuntimeError("OpenAgent 重启助手仍在运行，请待其退出后卸载")
+    require_stopped(workers)
+    if plan["launches"]:
+        labels = {line.split()[-1] for line in run(["launchctl", "list"]).splitlines() if line.split()}
+        for launch in plan["launches"]:
+            if launch["label"] in labels:
+                run(["launchctl", "bootout", f"gui/{os.getuid()}/{launch['label']}"])
+        remaining = {line.split()[-1] for line in run(["launchctl", "list"]).splitlines() if line.split()}
+        if any(launch["label"] in remaining for launch in plan["launches"]):
+            raise RuntimeError("OpenAgent 重启启动项停用未确认；未继续卸载")
+    require_stopped(legacy_workers)
 
 
 def inspect_credential(root, boundary, filename, files, *, owned_http=False):
@@ -410,7 +586,11 @@ def inspect_credential(root, boundary, filename, files, *, owned_http=False):
                   and all(isinstance(state.get(key), str) and state[key].strip()
                           for key in ("client_id", "refresh_token"))
                   and isinstance(state.get("note", ""), str))
-        if state.get("resource") not in OPENAGENT_ENDPOINTS and not legacy:
+        legacy_state = (filename == ".openagent_oauth_state.json"
+                        and set(state) == {"client_id", "verifier", "challenge", "state", "access_token", "refresh_token", "expires_in"}
+                        and all(isinstance(state[key], str) and state[key].strip() for key in state if key != "expires_in")
+                        and type(state["expires_in"]) is int and state["expires_in"] > 0)
+        if state.get("resource") not in OPENAGENT_ENDPOINTS and not legacy and not legacy_state:
             raise ValueError("无法确认 OAuth 状态归属：" + str(credential["target"]))
         files.append(credential)
 
@@ -481,7 +661,12 @@ def run_native(args, home, config_dir=None):
     environment.update(CODEBUDDY_CONFIG_DIR=directory, WORKBUDDY_CONFIG_DIR=directory)
     # 宿主启动维护会删除其他过期内置市场；卸载子进程只处理已核实的 OpenAgent。
     environment["CODEBUDDY_SKIP_BUILTIN_MARKETPLACE"] = "1"
-    return subprocess.run([find_codebuddy(home), *args], cwd=home, stdin=subprocess.DEVNULL,
+    command = find_codebuddy(home)
+    dist = Path(command).resolve().parent.parent / "dist"
+    # WorkBuddy 新包只提供 lite-wb；直接调用 bin 时必须使用宿主已有的选择开关。
+    if (dist / "codebuddy-lite-wb.mjs").is_file() and not (dist / "codebuddy.js").is_file():
+        environment["CODEBUDDY_FORCE_LITE_WB_BUNDLE"] = "1"
+    return subprocess.run([command, *args], cwd=home, stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, timeout=30, env=environment)
 
 
@@ -522,12 +707,13 @@ def print_help():
 按宿主配置环境变量和当前用户目录识别安装位置，清理 MCP、旧 Skills/OAuth/代理，
 以及 browser-tools 内已核实的 close-tab.html、close-now.html、close-all-tabs.html，
 以及用户级原生插件/Marketplace 的设置、登记和已核实的缓存、市场目录。
+同时清理固定来源的 MCP 信任、已识别安装消息/PKCE/重启助手和 macOS 旧重启启动项。
 优先 WORKBUDDY_CONFIG_DIR，其次 CODEBUDDY_CONFIG_DIR；未设置时使用当前用户的 .workbuddy。
-同时兼容当前用户的 .workbuddy 和 .workbuddy-ai，不扫描其他磁盘目录。
+同时兼容当前用户的 .workbuddy 和 .workbuddy-ai；启动项仅检查当前用户的 Library/LaunchAgents。
 --dry-run  仅预览，不写文件、不调用 CLI
 --yes      明确授权跳过交互确认
 --skip-cli 仅清理个人安装项，不声称原生插件/Marketplace 已卸载
-不支持 --force；冲突必须先人工核对。保留其他插件、共享会话和日志，不撤销远端授权。""")
+不支持 --force；冲突必须先人工核对。保留其他插件、个人备份、共享会话和日志，不撤销远端授权。""")
 
 
 def uninstall(*, home=None, args=(), run_codebuddy=None):
@@ -549,7 +735,13 @@ def uninstall(*, home=None, args=(), run_codebuddy=None):
         print("- 删除 " + str(file["target"]))
     for mcp in plan["mcps"]:
         if mcp["changed"]:
-            print("- 仅移除 mcpServers.openagent：" + str(mcp["target"]))
+            label = "固定来源的 OpenAgent 信任" if mcp["target"].name == "mcp-approvals.json" else "mcpServers.openagent"
+            print("- 仅移除 " + label + "：" + str(mcp["target"]))
+    for path in plan["trees"]:
+        if path.parent not in plan["trees"]:
+            print("- 清理已核实的安装临时目录：" + str(path))
+    for launch in plan["launches"]:
+        print("- 停用旧重启启动项：" + launch["label"])
     if "--skip-cli" not in options:
         for native in natives:
             print("- 原生配置目录：" + str(native["root"]))
@@ -572,6 +764,9 @@ def uninstall(*, home=None, args=(), run_codebuddy=None):
             return {"cancelled": True}
     if build_plan(home, roots) != plan or [inspect_native(root) for root in roots] != natives:
         raise RuntimeError("目标在检查后发生变化，卸载未完成；未调用 CLI")
+    stop_restart_tasks(plan)
+    if build_plan(home, roots) != plan:
+        raise RuntimeError("停用重启任务期间目标发生变化；未继续卸载")
     if "--skip-cli" not in options:
         for index, native in enumerate(natives):
             active = native["trees"] or any(f["original"] != f["config"] for f in native["jsons"])
@@ -581,7 +776,7 @@ def uninstall(*, home=None, args=(), run_codebuddy=None):
     # 确认或 CLI 执行期间改变内容、权限或新增目标，均停止而不覆盖。
     if build_plan(home, roots) != plan:
         raise RuntimeError("目标在检查后发生变化，卸载未完成；未继续清理个人文件")
-    native_jsons, native_paths = [], {}
+    native_jsons, native_paths = [], dict(plan["trees"])
     if "--skip-cli" not in options:
         for native in natives:
             jsons, paths = remaining_native(native)
@@ -612,7 +807,7 @@ def uninstall(*, home=None, args=(), run_codebuddy=None):
         else:
             path.rmdir()
     remaining = build_plan(home, roots)
-    if remaining["files"] or any(mcp["changed"] for mcp in remaining["mcps"]):
+    if remaining["files"] or remaining["trees"] or any(mcp["changed"] for mcp in remaining["mcps"]):
         raise RuntimeError("仍存在已识别安装项，卸载未完成")
     if "--skip-cli" not in options:
         for root in roots:
