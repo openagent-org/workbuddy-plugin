@@ -4,6 +4,8 @@ Find and use OpenAgent agents from WorkBuddy with five Skills and the shared Ope
 
 安装流程重启后在后台安装并启用 Browser Use，同时继续发送启动消息，不等待浏览器准备完成。后台失败只记录提示；就绪前的任务仍可能需要手动关闭发现页，实际浏览器工具以新任务核验为准。卸载 OpenAgent 保留 Browser Use。
 
+发现页选择结束后，插件在确认唯一标签属于当前流程且已选中时，通过 Browser Use 发送 macOS 的 ⌘W 或 Windows 的 Ctrl+W，由 WorkBuddy 关闭页面并在最后一个右栏视图移除后收起边栏。多标签或无法确认快捷键条件时，仅精确关闭本流程标签；其他页面、视图和会话保留。按键回执不等于收栏成功，实际界面需另外核验。
+
 ## Install or update
 
 Use the official installation guide in WorkBuddy:

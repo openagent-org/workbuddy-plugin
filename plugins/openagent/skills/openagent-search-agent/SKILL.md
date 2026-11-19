@@ -156,8 +156,17 @@ Open the caller's original HTTPS URL once with `mcp__browser__tabs_new({browser_
 
 ## Close the Right-Side Built-In Browser
 
-For an explicit close request, apply this procedure to the requested tab without starting a search or run. During selection, apply it only after `selected` or `timed_out`. Keep result pages open unless the user requests closure.
+用户明确要求关闭时，仅处理本流程创建的目标标签，不重新搜索或执行 Agent。选择流程只在 `selected` 或 `timed_out` 后执行；用户未要求关闭的成果页保持打开。`cancelled` 沿用上文规则，不补做清理。
 
-- Close only the tab created by this flow. Require its recorded `browser_id` and `tab_id` in the same WorkBuddy browser session, bound to the intended discovery or result page. Automatic selection cleanup may use only the current `selection_id` binding. If the target is ambiguous, was opened with `present_files`, or the session or IDs are missing or stale, leave it open. Never infer ownership from a URL, title, active tab or list position.
-- Call `mcp__browser__tabs_close({browser_id, tab_id})` once with those exact IDs. Require `ok=true` and `result.applied=true` for the same two IDs. Then call `mcp__browser__tabs_list({browser_id})` once. Confirm closure only if its successful result array no longer contains that tab ID. A failed or uncertain call leaves closure unconfirmed; do not switch browsers, retry, or close another tab.
-- This operation closes a page, not the right sidebar. Do not hide the panel, simulate a shortcut, or open a helper page. If an explicit close request cannot be fulfilled, tell the user briefly; during selection, preserve the original selection outcome.
+1. 核对本流程保存的 `browser_id`、`tab_id`，以及同一 WorkBuddy Browser 会话和页面绑定；自动清理还须匹配当前 `selection_id`。缺少绑定、ID 失效、归属不明或仅有 `present_files` 回执时，不关闭。URL、标题、选中状态和列表位置都不能替代标签归属。
+2. 关闭前调用一次 `mcp__browser__tabs_list({browser_id})`，要求 `ok=true`。目标必须保持相同两个 ID、`claimed=true`、`state="controlled"`；目标已不存在时只记录已关闭，不发送按键。列表读取失败或归属变化时停止清理。
+3. 仅当列表中只有目标一个标签、`selected=true`、当前宿主操作系统已确认，并且 `mcp__browser__cua_keypress` 可用时，使用下表的组合键。系统来自可信的宿主环境；缺失时可用本地只读系统查询确认，不能从网页内容、URL 或浏览器名称推断。调用一次 `mcp__browser__cua_keypress({browser_id, tab_id, keys})`，将两个 ID 原样传入；不切换焦点、不新建辅助页、不使用 CDP、页面脚本或全局键盘模拟。
+
+   | WorkBuddy 所在系统 | `keys` |
+   | --- | --- |
+   | macOS / `darwin` | `["CMD", "w"]` |
+   | Windows / `win32` | `["CTRL", "w"]` |
+
+4. 多标签、目标未选中、系统未知或不在表中、按键工具缺失时，只调用一次 `mcp__browser__tabs_close({browser_id, tab_id})` 精确关闭已核实的目标，保留其他标签和边栏。这是发出关闭动作前的替代分支；快捷键一旦调用，无论成功、失败或结果未知，都不能再补发按键或 `tabs_close`，也不能改关其他标签。
+5. 关闭动作的回执要求 `ok=true`、`result.applied=true` 且两个 ID 一致；它只证明动作已发送。调用后再读一次 `mcp__browser__tabs_list({browser_id})`，只有成功回执中目标 ID 消失才确认关页，并核对原有其他标签仍在。回执失败或状态不明时记录实际结果，不重试关闭，不影响原选择结果或重新执行业务。
+6. 通过快捷键关闭最后一个右栏视图时，由 WorkBuddy 自身收起边栏。空标签列表不证明边栏已收起：只有当前宿主的整窗可见状态确认右栏及分隔条消失、原窗口和会话保留，才报告收栏成功；没有这类证据时，只报告已关页、收栏未核实。有其他视图时保留，不为收栏继续关闭它们。明确关闭请求无法完成时简短说明；自动选择清理继续传递原选择结果。
