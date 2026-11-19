@@ -455,6 +455,31 @@ def find_wb():
     return None
 
 
+BROWSER_USE_JS = r'''(()=>{
+    const invoke=globalThis.__wbInvoke;
+    if(typeof invoke!=='function')return false;
+    if(globalThis.__openagentBrowserUsePreparationStarted)return true;
+    globalThis.__openagentBrowserUsePreparationStarted=true;
+    // 后台 Promise 归宿主窗口持有，不等待安装，也不依赖 CDP 连接保持。
+    void Promise.resolve().then(async()=>{
+        const plugin=status=>status?.plugins?.['browser-use'];
+        const installed=state=>state?.state==='installed'&&typeof state.installedVersion==='string'&&state.installedVersion.length>0;
+        const ready=state=>installed(state)&&state.enabled===true;
+        let state=plugin(await invoke('nativeRuntime:getStatus',{}));
+        if(ready(state))return true;
+        if(state?.state==='not-installed'&&state.enabled===false){
+            state=plugin(await invoke('nativeRuntime:install',{},'browser-use'));
+        }else if(installed(state)&&state.enabled===false){
+            state=plugin(await invoke('nativeRuntime:setEnabled',{},'browser-use',true));
+        }
+        if(!ready(state))return false;
+        return ready(plugin(await invoke('nativeRuntime:getStatus',{})));
+    }).catch(()=>false).then(ready=>{
+        console.info(ready?'OpenAgent: Browser Use 已安装并启用':'OpenAgent: Browser Use 后台准备未确认就绪');
+    });
+    return true;
+})()'''
+
 WATCH_JS = r'''(message=>{const api=wb.conversations;const original=api.create;const state={id:null,pending:false,api,original};const wrapped=async function(params){const text=(params.promptContentBlocks||[]).filter(b=>b.type==='text').map(b=>b.text||'').join('');const matches=text.trim()===message.trim();if(matches)state.pending=true;try{const result=await original.call(this,params);if(matches&&result?.info?.id)state.id=result.info.id;return result;}finally{if(matches)state.pending=false;}};state.wrapped=wrapped;globalThis.__wbRestartCreated=state;api.create=wrapped;return api.create===wrapped;})'''
 
 SEND_JS = r'''(async message=>{
@@ -551,6 +576,14 @@ def send_message(request):
             verify_enabled_config()
             log('[i] 缺少启用 API；已核验配置开关，实际连接和工具加载仍待新任务验证')
         can_navigate = stages['navigate']
+        try:
+            browser_started = client.evaluate(BROWSER_USE_JS) is True
+        except Exception:
+            browser_started = False
+        if browser_started:
+            log('Browser Use 后台准备已安排，不等待完成，继续发送启动消息')
+        else:
+            log('[!] Browser Use 后台准备未确认启动，继续发送启动消息')
         # 先离开冷启动首页，避免旧首页消费者抢先领取新任务的发送指令。
         if request.get('session_id'):
             if client.evaluate(RESTORE_TURN_JS + '(' + json.dumps(request['session_id']) + ')') is not True:

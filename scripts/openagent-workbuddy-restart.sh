@@ -229,6 +229,31 @@ RESTORE_TURN_JS = r'''(async sessionId=>{
 })'''
 
 
+BROWSER_USE_JS = r'''(()=>{
+    const invoke=globalThis.__wbInvoke;
+    if(typeof invoke!=='function')return false;
+    if(globalThis.__openagentBrowserUsePreparationStarted)return true;
+    globalThis.__openagentBrowserUsePreparationStarted=true;
+    // 后台 Promise 归宿主窗口持有，不等待安装，也不依赖 CDP 连接保持。
+    void Promise.resolve().then(async()=>{
+        const plugin=status=>status?.plugins?.['browser-use'];
+        const installed=state=>state?.state==='installed'&&typeof state.installedVersion==='string'&&state.installedVersion.length>0;
+        const ready=state=>installed(state)&&state.enabled===true;
+        let state=plugin(await invoke('nativeRuntime:getStatus',{}));
+        if(ready(state))return true;
+        if(state?.state==='not-installed'&&state.enabled===false){
+            state=plugin(await invoke('nativeRuntime:install',{},'browser-use'));
+        }else if(installed(state)&&state.enabled===false){
+            state=plugin(await invoke('nativeRuntime:setEnabled',{},'browser-use',true));
+        }
+        if(!ready(state))return false;
+        return ready(plugin(await invoke('nativeRuntime:getStatus',{})));
+    }).catch(()=>false).then(ready=>{
+        console.info(ready?'OpenAgent: Browser Use 已安装并启用':'OpenAgent: Browser Use 后台准备未确认就绪');
+    });
+    return true;
+})()'''
+
 def send_message(request):
     """通过输入状态和发送 API 提交一次消息，确认创建后导航；未知结果不补发。"""
     message=request['message']
@@ -259,6 +284,12 @@ def send_message(request):
         }catch{return 'failed';}})()'''
         if c.evaluate(ENABLE_JS)!='ok':raise RestartError('MCP_ENABLE_NOT_CONFIRMED')
         log('已启用 openagent')
+        try:
+            browser_started=c.evaluate(BROWSER_USE_JS) is True
+        except Exception:
+            browser_started=False
+        if browser_started:log('Browser Use 后台准备已安排，不等待完成，继续发送启动消息')
+        else:log('[!] Browser Use 后台准备未确认启动，继续发送启动消息')
         # 先离开冷启动首页，避免旧首页消费者抢先领取新任务的发送指令。
         if request.get('session_id'):
             if c.evaluate(RESTORE_TURN_JS+'('+json.dumps(request['session_id'])+')') is not True:

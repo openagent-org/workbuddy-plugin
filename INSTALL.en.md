@@ -161,6 +161,8 @@ No `sa_` prefix is required; placeholders are not defaults. Keep the Agent; appe
 
 ## Restart and send once (restart_send)
 
+重启后后台安装、启用 Browser Use，不等待完成，立即继续发送消息。失败只记录提示，不重试。断开 CDP 后任务继续，退出或重载宿主不保证继续。就绪前工具可能不可用；卸载保留 Browser Use。
+
 After step 4, use your platform below. `--require-existing-trust` checks trust, never grants it. Save the exact message with a file tool as UTF-8 JSON `{"message":"..."}`; commands/logs get only its absolute path. Stop on denial, missing context, timeout or syntax/argument errors.
 
 ### macOS
