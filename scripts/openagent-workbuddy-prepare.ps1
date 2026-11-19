@@ -1,7 +1,6 @@
-# 只读预检、原生插件同步与准备重启脚本；配置编辑和安排重启使用独立调用。
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('preflight', 'prepare')]
+  [ValidateSet('preflight', 'prepare', 'check-and-prepare')]
   [string]$Stage,
   [Parameter(Mandatory = $true)]
   [ValidateSet('gitee', 'github')]
@@ -19,9 +18,7 @@ $installBase = @{
 }[$Source]
 
 function Resolve-Python {
-  foreach ($name in 'python3', 'python') {
-    $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $command) { continue }
+  foreach ($command in (Get-Command -Name python3, python -All -CommandType Application -ErrorAction SilentlyContinue)) {
     try {
       $lines = @(& $command.Path -I -X utf8 -c "import sys; print(sys.executable); sys.exit(sys.version_info < (3, 9))" 2>$null)
       if ($LASTEXITCODE -ne 0 -or $lines.Count -ne 1) { continue }
@@ -32,7 +29,7 @@ function Resolve-Python {
   throw 'Python 3.9+ is required (python3 or python)'
 }
 
-if ($Stage -eq 'preflight') {
+if ($Stage -ne 'prepare') {
   $setup = Join-Path ([IO.Path]::GetTempPath()) ('openagent-setup-' + [guid]::NewGuid().ToString('N') + '.py')
   try {
     $pythonExe = Resolve-Python
@@ -53,13 +50,20 @@ if ($Stage -eq 'preflight') {
     $ready = $checkCode -eq 0 -and $checkLines -contains 'CONFIG_READY'
     $needsEdit = $checkCode -eq 1 -and $checkLines.Count -eq 1 -and $checkLines[0] -match '^CONFIG_UPDATE_REQUIRED=.+$'
     if (-not ($ready -or $needsEdit)) { throw 'Setup preflight failed' }
-    Write-Output ('SETUP_SCRIPT_READY=' + $setup)
-    Write-Output ('PREPARE_SCRIPT_READY=' + $PSCommandPath)
+    if ($Stage -eq 'preflight') {
+      Write-Output ('SETUP_SCRIPT_READY=' + $setup)
+      Write-Output ('PREPARE_SCRIPT_READY=' + $PSCommandPath)
+      return
+    }
+    if ($needsEdit) {
+      Remove-Item -LiteralPath $setup -Force
+      return
+    }
+    $SetupScript = $setup
   } catch {
     Remove-Item -LiteralPath $setup -Force -ErrorAction SilentlyContinue
     throw
   }
-  return
 }
 
 $setup = $SetupScript

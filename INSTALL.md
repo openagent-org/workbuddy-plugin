@@ -31,7 +31,7 @@ Windows 使用 `curl.exe`、UTF-8 输出（`$OutputEncoding = [System.Text.UTF8E
 
 ## 1. 注册 OAuth 客户端（register）
 
-注册一次，必须返回非空 `client_id`，用于后续步骤。
+按平台只注册一次，必须返回非空 `client_id`。macOS/Linux 执行下方命令。
 
 ```bash
 curl -s -X POST "https://openagent.org/owner-oauth/register" \
@@ -45,6 +45,12 @@ curl -s -X POST "https://openagent.org/owner-oauth/register" \
     "token_endpoint_auth_method": "none",
     "scope": "agent.discover agent.invoke artifact.read"
   }'
+```
+
+Windows 将上方 `-d` 内的 JSON 原样写入本次专用的 UTF-8 无 BOM 临时文件，将下方占位符替换为其绝对路径，只执行这条注册命令，调用结束后删除临时文件。
+
+```powershell
+curl.exe -fsS https://openagent.org/owner-oauth/register -H 'Content-Type: application/json' --data-binary '@<JSON_FILE>'
 ```
 
 ## 2. 生成 PKCE（pkce）
@@ -199,14 +205,13 @@ $prepare = Join-Path ([IO.Path]::GetTempPath()) ('openagent-prepare-' + [guid]::
 try {
   curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-prepare.ps1" -o $prepare
   if ($LASTEXITCODE -ne 0) { throw 'Prepare script download failed' }
-  & $prepare -Stage preflight -Source $installSource
-} catch {
-  Remove-Item -LiteralPath $prepare -Force -ErrorAction SilentlyContinue
-  throw
+  & $prepare -Stage check-and-prepare -Source $installSource
+} finally {
+  if (Test-Path -LiteralPath $prepare) { Remove-Item -LiteralPath $prepare -Force }
 }
 ```
 
-须有 `PREPARE_SCRIPT_READY`、`SETUP_SCRIPT_READY`。结合输出判断 `SETUP_CHECK_EXIT`：`0` 且有 `CONFIG_READY`，跳过编辑；`1` 且仅有 `CONFIG_UPDATE_REQUIRED=<settings.json绝对路径>`，宿主未报告失败时才可编辑。其余停止。
+配置已就绪时，脚本在同一次调用内完成同步与准备，直接核对下方就绪回执。只有预检返回单一配置差异 `CONFIG_UPDATE_REQUIRED=<settings.json绝对路径>`、`SETUP_CHECK_EXIT=1` 且工具调用成功时，才按下方步骤编辑。其他错误或超时立即停止。
 
 原生 Read/Edit 只编辑输出的当前用户 `.workbuddy/settings.json` 路径，合并下列字段并保留其他设置。只有原生 Read/元信息证明文件不存在、写前再次确认后才用 Write；读取被拒不等于不存在。不输出完整设置或凭据。只接受缺失或官方 `git`/`rel` 来源；数据无效、歧义、来源冲突或编辑失败即停止，不用 shell/Python 兜底。
 
@@ -227,17 +232,7 @@ try {
 }
 ```
 
-复用本次返回的两个路径及所选来源；准备阶段以 --sync-only 核对已有配置、调用原生插件同步并校验就绪。
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$prepare = '<PREPARE_SCRIPT_READY_ABSOLUTE_PATH>'
-try {
-  & $prepare -Stage prepare -Source gitee -SetupScript '<SETUP_SCRIPT_READY_ABSOLUTE_PATH>'
-} finally {
-  Remove-Item -LiteralPath $prepare -Force
-}
-```
+仅在上述配置编辑成功后，用同一来源再执行一次上方 PowerShell 命令。它会重新下载脚本、核验配置并完成准备。再次提示配置差异时停止。
 
 须成功并返回 `PLUGIN_READY`、`RESTART_SCRIPT_READY`、`RESTART_PYTHON_READY`。使用本次 Python、脚本路径和同一消息 JSON，只执行：
 
@@ -251,7 +246,7 @@ try {
 
 已安排后立即按“完成报告”结束当前任务，不轮询。之后核验重启、发送一次完整消息及工具加载；macOS 查看 `~/.workbuddy/logs/wb-relaunch.log`，Windows 查看本次 `RESULT_PATH`。已重启不再重启；发送成功或未知不补发。仅确认未尝试发送时使用手动模板。
 
-Windows 预检后保留 helper/setup 供准备阶段复用；预检或编辑失败则清理。准备阶段清理临时脚本，worker 清理自己的请求文件及 Windows 计划任务；清理被拒时报告。原调用结束后，仅重试获准的失败下载及剩余检查；不重放 OAuth、已完成的 setup/配置或整个准备调用，不改已确认的来源或放宽权限。
+Windows 每次调用清理本次临时脚本，worker 清理自己的请求文件及 Windows 计划任务；清理被拒时报告。原调用结束后，仅重试获准的失败下载及剩余检查；不重放 OAuth、已完成的 setup/配置或整个准备调用，不改已确认的来源或放宽权限。
 
 ## 新任务排障
 

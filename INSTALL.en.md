@@ -25,11 +25,11 @@ python3 --version
 
 Require Python 3.9+ and WorkBuddy launched before; uploads need Node.js 20+ with bundled dependencies.
 
-Windows: UTF-8, backticks, Python `-c`. Step 4: unique temp dir, single-quoted here-string JSON piped to the selected Python/mode, `finally` cleanup. Check every native command's `$LASTEXITCODE`; stop on failure.
+Windows: UTF-8, backticks, Python `-c`. Step 4: pipe single-quoted here-string JSON to Python in a unique temp dir; clean up in `finally`. Stop on nonzero `$LASTEXITCODE`.
 
 ## 1. Register (register)
 
-Register once; require a non-empty `client_id` and use it below.
+Register once; require nonempty `client_id`. macOS/Linux:
 
 ```bash
 curl -s -X POST "https://openagent.org/owner-oauth/register" \
@@ -43,6 +43,12 @@ curl -s -X POST "https://openagent.org/owner-oauth/register" \
     "token_endpoint_auth_method": "none",
     "scope": "agent.discover agent.invoke artifact.read"
   }'
+```
+
+Windows: save that JSON to a unique UTF-8 temp file (no BOM). Insert its path below; delete it afterward.
+
+```powershell
+curl.exe -fsS https://openagent.org/owner-oauth/register -H 'Content-Type: application/json' --data-binary '@<JSON_FILE>'
 ```
 
 ## 2. PKCE (pkce)
@@ -195,14 +201,13 @@ $prepare = Join-Path ([IO.Path]::GetTempPath()) ('openagent-prepare-' + [guid]::
 try {
   curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' "$installBase/scripts/openagent-workbuddy-prepare.ps1" -o $prepare
   if ($LASTEXITCODE -ne 0) { throw 'Prepare script download failed' }
-  & $prepare -Stage preflight -Source $installSource
-} catch {
-  Remove-Item -LiteralPath $prepare -Force -ErrorAction SilentlyContinue
-  throw
+  & $prepare -Stage check-and-prepare -Source $installSource
+} finally {
+  if (Test-Path -LiteralPath $prepare) { Remove-Item -LiteralPath $prepare -Force }
 }
 ```
 
-Require `PREPARE_SCRIPT_READY`/`SETUP_SCRIPT_READY`. `SETUP_CHECK_EXIT`: `0`+`CONFIG_READY` skips edits; `1`+only `CONFIG_UPDATE_REQUIRED=<absolute settings.json path>` allows edits if no host errors. Otherwise stop.
+Ready configurations proceed directly to sync and preparation in this call. Edit only if the call succeeds with `SETUP_CHECK_EXIT=1` and the sole configuration finding `CONFIG_UPDATE_REQUIRED=<absolute settings.json path>`. Stop on other errors or timeouts.
 
 Native Read/Edit only the returned current-user `.workbuddy/settings.json`; merge fields below, preserving others. Write requires native Read/metadata proof of absence, rechecked before writing; denial is not absence. Never print full settings/credentials. Sources: absent or official `git`/`rel` only. Invalid/ambiguous/conflicting data or edit errors: stop; no shell/Python fallback.
 
@@ -223,17 +228,7 @@ Native Read/Edit only the returned current-user `.workbuddy/settings.json`; merg
 }
 ```
 
-Reuse both returned paths and source. Preparation uses --sync-only to require the existing configuration, invoke native plugin synchronization, and verify readiness.
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$prepare = '<PREPARE_SCRIPT_READY_ABSOLUTE_PATH>'
-try {
-  & $prepare -Stage prepare -Source gitee -SetupScript '<SETUP_SCRIPT_READY_ABSOLUTE_PATH>'
-} finally {
-  Remove-Item -LiteralPath $prepare -Force
-}
-```
+Only after the required edit succeeds, run the same PowerShell block once with the same source. It downloads fresh scripts, checks the configuration and prepares the restart. Stop if another edit is requested.
 
 Require success and `PLUGIN_READY`/`RESTART_SCRIPT_READY`/`RESTART_PYTHON_READY`. Reuse this run's Python/script paths and JSON. Execute only:
 
@@ -247,7 +242,7 @@ Success with `TASK_NAME`/`SCHEDULED_WORKER_PID`/`RESULT_PATH` confirms schedulin
 
 Once scheduled, report and end; no polling. Later verify restart, one complete message and loaded tools. Logs: macOS `~/.workbuddy/logs/wb-relaunch.log`, Windows `RESULT_PATH`. Never repeat restart or successful/unknown sending. Manual fallback: only confirmed unattempted sending.
 
-Keep Windows helper/setup for preparation; delete on preflight/edit failure. Preparation cleans temp scripts; workers clean requests and the Windows scheduled task. Report denied cleanup. Once the call ends, retry only allowed failed downloads/remaining checks. Never replay OAuth, completed setup/configuration or full preparation, change confirmed sources, or relax permissions.
+Each Windows call cleans its temp scripts; workers clean requests and the Windows scheduled task. Report denied cleanup. Once the call ends, retry only allowed failed downloads/remaining checks. Never replay OAuth, completed setup/configuration or full preparation, change confirmed sources, or relax permissions.
 
 ## Troubleshooting
 
