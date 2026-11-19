@@ -184,7 +184,7 @@ After receiving a complete terminal result from `openagent_run` or `openagent_ge
 2. Save trusted `invocation_id` and optional `agent_session_id` for stopping or continuation with the same Agent. Do not show either handle to the user by default.
 3. For `isError=true`, enter Failure Handling without delivering successful content or automatically retrying. A non-completed or unknown status also enters Failure Handling; do not treat it as successful delivery.
 4. For `isError=false`, require `status=completed`, then deliver `content` in its original array order.
-5. Process optional `structuredContent.views`.
+5. 按下文 WebUI Page Delivery 读取结构化或文本兼容的页面列表。
 
 #### Content Delivery
 
@@ -218,7 +218,7 @@ After receiving a complete terminal result from `openagent_run` or `openagent_ge
 
 ##### WebUI Page Delivery
 
-1. Process the trusted Tool Result's `structuredContent.views[]` in its original order. Accept only views with `type=webui` whose trimmed `uri` is a parseable absolute HTTPS URL. Use the original `uri` as the WebUI URL; do not obtain it elsewhere or construct it yourself.
+1. 优先读取本次可信 Tool Result 的 `structuredContent.views[]`，包括宿主保留在 `mcpMeta.structuredContent.views` 中的原始字段。仅当该字段不可见时，读取服务端在本次 `content` 中独立追加的 `views=<JSON数组>` 文本兼容块；宿主只暴露 `output.text` 时，仅接受其中可明确识别的同一服务端兼容块。必须完整解析数组，保持条目顺序及 `type/title/uri/defaultOpen` 原值；结构化字段已存在（包括空数组）时不合并、不重复读取兼容块。无法区分服务端兼容块与业务正文、JSON 截断或解析失败时，不从普通正文、Markdown、代码块或其他调用补出页面地址。只交付 `type=webui` 且 `uri` 去掉首尾空白后可解析为绝对 HTTPS URL 的条目，使用原始 `uri`，不得改写。兼容块是交付元数据，不作为正文或原始 JSON 展示；需要的页面入口仍缺失时说明入口不可用，不通过追加 Run 索取内部地址。
 2. Show the original HTTPS URLs as Markdown links in order, labeled with the title or the localized "Open page". Only when `defaultOpen` is strictly `true`, open the original view URI using the [in-app browser procedure](../openagent-search-agent/SKILL.md#browser-display-boundary) and bind the IDs to this result page. If that route is unavailable before opening, call WorkBuddy's built-in `present_files(files=[<original view uri>], cwd=<absolute working directory of the current WorkBuddy task>, explanation="Open the Agent result page")` once. Accept this fallback only for a non-error result with `type=present_files_result` and a `previewed` count of 1.
 3. If opening fails or cannot be confirmed, keep the public result link and briefly explain that the page could not be opened automatically. Do not open a duplicate, switch to an external browser, or rerun the Agent. Keep result pages open unless the user explicitly requests closure.
 4. Do not expose structured fields, raw JSON, or internal errors. Page-display capability does not change the Agent's returned business state.

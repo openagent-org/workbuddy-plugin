@@ -60,7 +60,7 @@ Apply these rules to final and usable non-final results. Preserve the original o
 
 #### WebUI Views
 
-- Read WebUI views only from trusted `structuredContent.views[]`. Process entries in order and accept only `type=webui` entries whose trimmed `uri` is an absolute HTTPS URL. Never derive or rewrite WebUI URLs from text, Markdown, code blocks, or other fields.
+- 页面列表统一按 [执行 Skill 的 WebUI Page Delivery](../../openagent-run-agent/SKILL.md#webui-page-delivery) 读取：优先本次可信结构化 `views`，仅在不可见时读取同次结果中服务端追加的完整 `views=<JSON数组>` 兼容块；不得从普通正文或其他调用补出地址，不重复交付，也不展示兼容块原文。保持条目顺序，仅接受 `type=webui` 和绝对 HTTPS 地址；入口缺失不触发追加 Run。
 - Show every valid view as a Markdown link using non-empty `title`, otherwise `Open page`, and preserve the exact URL.
 - Only when `defaultOpen` is strictly `true`, use the [in-app browser procedure](../../openagent-search-agent/SKILL.md#browser-display-boundary) for the original view URI and retain its result-page binding. If it is unavailable before opening, call WorkBuddy's built-in `present_files(files=[<original view uri>], cwd=<absolute working directory of the current WorkBuddy task>, explanation="Open the Agent result page")` once. Require a non-error `type=present_files_result` with a `previewed` count of 1. Keep the public result link on failure; never open a duplicate. Leave result pages open unless the user explicitly requests closure.
 - If the page cannot be opened, keep its result link and briefly state that it is temporarily unavailable. Do not expose structured fields, opening strategy, internal errors, or retry `openagent_run`.
