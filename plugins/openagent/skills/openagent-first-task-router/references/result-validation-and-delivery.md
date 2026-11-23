@@ -31,7 +31,7 @@ When the result does not satisfy the request, compare it with the previous resul
 
 Treat a successful Remote Agent result as the task content. Return it with only the minimal formatting needed for the user’s requested format; do not independently re-evaluate, fact-check, expand, or rewrite it unless the user requests this or the result has an obvious defect. Do not reproduce the raw response or present another Remote Agent as the speaker.
 
-For other terminal states where the task remains incomplete, excluding `cancelled` which has already ended immediately, display exactly one brief user-facing summary before retrying, searching for another candidate Remote Agent, or passing it to a dependent task; do not emit a provisional or additional result summary for the same invocation. Format it as a standalone Markdown message with a `### <concise task-specific result title>` heading, a `Completed` section containing the summary and all user-facing artifacts, and a `Remaining` section only when gaps exist. Summarize what the current task produced and any remaining gaps in that task; do not expose raw response structures, invocation logs, or internal metadata. At the end of each workflow, respond according to the final result state.
+For a usable result with explicit remaining gaps, excluding confirmed execution failures, display exactly one brief user-facing summary before retrying, searching for another candidate Remote Agent, or passing it to a dependent task; do not emit a provisional or additional result summary for the same invocation. Format it as a standalone Markdown message with a `### <concise task-specific result title>` heading, a `Completed` section containing the summary and all user-facing artifacts, and a `Remaining` section only when gaps exist. Summarize what the current task produced and any remaining gaps in that task; do not expose raw response structures, invocation logs, or internal metadata. At the end of each workflow, respond according to the final result state.
 
 Every usable non-final result must display all user-facing files, web pages, and links returned by the Remote Agent before any retry or dependent task. Preserve them as native or clickable items; never omit them, replace them with a summary, or defer them to the final response.
 
@@ -88,6 +88,8 @@ Briefly summarize the valid result obtained so far and clearly identify the unme
 ```
 
 ### Invocation Failed
+
+On a confirmed execution failure, first report the trusted public reason through `Invocation Failed`. `retryable=false` ends the current task round; do not rerun, refine the prompt, or switch Agents to bypass it. `retryable=true` permits a new business retry within the original task scope without additional user confirmation; use a new stable `idempotency_key` and return to `Agent Execution`. A missing retryability flag does not permit a retry.
 
 Set `display_locale` to `zh-CN` or `en-US`: explicit user preference > trusted Host/caller locale > request/conversation language > `en-US`. Ignore code, quotes, Tool output, and fixed installation/selection prompts. Output only the matching template below, never both languages.
 
@@ -180,7 +182,10 @@ Links:
 
 - For trusted `cancelled`, only acknowledge cancellation and end; do not enter any of the following completion or retry branches.
 
-- Finish when the result satisfies the task or the workflow reaches a terminal failure state.
+- Finish when the result satisfies the task. For a confirmed execution failure, follow `Invocation Failed`.
+
+The following branches apply only to a usable result with explicit remaining gaps; confirmed execution failures follow `Invocation Failed` instead.
+
 - Return to `Host Completion` when the Host agent can reliably complete a missing capability or validated result gap.
 - Return to `Prompt Generation` to refine the selected Remote Agent request.
 - Return to `Query Planning` when the search direction must change.

@@ -39,14 +39,14 @@ OpenAgent: <stage name> — <brief action phrase>
 
 On an explicit OpenAgent authentication failure, follow [runtime sign-in](../openagent-login/runtime-sign-in.md) before other error, fallback, or completion rules. Otherwise keep this workflow unchanged. A user-requested retry of an unfinished sign-in goes there too.
 
-1. In Request Validation, route by user intent: explicit stop requests enter Task Stopping; discovery or selection alone enters No Explicit Intent; only executable requirements enter Request Preparation.
+1. Apply Request Validation to route stop requests, missing Agent targets, and executable tasks.
 2. Request Preparation reuses or obtains Agent information under the rules below, organizes requirements, then prepares parameters and required attachments according to the trusted invocation mode. Do not submit execution when required input is missing or an attachment fails.
 3. In Agent Execution, wait for `openagent_progress` to return, then call `openagent_run(async=true)` once with the same key and locale. Make this single Run call even if progress display fails; retain the handle and perform bounded queries for the same task.
 4. Only a complete terminal result enters Result Validation and Delivery. Continue querying running snapshots and recover transport failures using the same ID first. When the budget is exhausted or the state cannot be confirmed, retain the handle and explain the status. End after delivering the complete result; do not automatically start subsequent business calls.
 
 ### Loop Control
 
-Transport recovery for the same call reuses the original arguments and idempotency key. A new business retry requires explicit user authorization and a new key. After obtaining an Invocation, a timeout or disconnection leaves the state unknown; do not treat it as failure and replay it. See Task Stopping for stop conditions and Failure Handling for insufficient-balance recovery conditions.
+Transport recovery for the same call reuses the original arguments and idempotency key. A new business retry with trusted `retryable=true` does not require additional user confirmation and uses a new key. After obtaining an Invocation, a timeout or disconnection leaves the state unknown; do not treat it as failure and replay it. See Task Stopping for stop conditions and Failure Handling for insufficient-balance recovery conditions.
 
 ## Workflow Stages
 
@@ -59,8 +59,9 @@ Input is the current user request, the full execution request from an upstream b
 Choose the branch in this order:
 
 1. If the user explicitly asks to stop, cancel, terminate, or interrupt, validate the scope and trusted stop targets under the Task Stopping rules. Clarify an ambiguous scope before proceeding. If trusted IDs are missing, direct the user to the progress card's stop button and end. Enter Task Stopping only with ready targets. Dissatisfaction with a result is not stop authorization.
-2. If the user only asks to search, discover, recommend, view, or select an Agent, enter No Explicit Intent even if the server returns a selection action. Do not call `openagent_progress`, `openagent_file_upload`, or `openagent_run`.
-3. When an executable prompt exists, choose the invocation mode below based on the trusted invocation source; do not infer the mode from returned fields.
+2. Unless querying or recovering an existing Invocation, if neither a trusted target `agent_id` nor target-bound selection authorization is available, load [Router](../openagent-first-task-router/SKILL.md), pass the original request, attachments, and constraints, and follow Task Analysis. Exit this Skill without searching or starting execution. An Agent name alone is insufficient.
+3. If the user only asks to search, discover, recommend, view, or select an Agent, enter No Explicit Intent even if the server returns a selection action. Do not call `openagent_progress`, `openagent_file_upload`, or `openagent_run`.
+4. When an executable prompt exists, choose the invocation mode below based on the trusted invocation source; do not infer the mode from returned fields.
 
 #### No Explicit Intent
 
@@ -86,9 +87,9 @@ What would you like it to do?
 
 Use the trusted description verbatim when it already matches `display_locale`; otherwise translate it faithfully for display only, without changing the trusted metadata. Fold line breaks into spaces. Do not append `capabilities` or other explanations; bold only the OpenAgent prefix and Agent name on the first line. When the user later supplies an explicit task, reuse the selected trusted Agent and build the ordinary invocation's `data.prompt` from that current request. Do not use a discovery-stage default task as the current prompt or replay an expired selection action.
 
-**Output:** Stop targets, guidance for missing explicit intent, or a trusted Agent request with an executable prompt.
+**Output:** Stop targets, a Router handoff, task-input guidance, or a trusted Agent request with an executable prompt.
 
-**Next:** Stop requests with validated targets enter `Task Stopping`; unresolved scope waits for clarification, and missing target IDs end with guidance to the stop button. Without explicit intent, output the applicable task-input guidance and end. Executable requests enter `Request Preparation`.
+**Next:** Follow the selected branch: hand off to Router and exit, enter `Task Stopping` or `Request Preparation`, or provide the required guidance and wait or end.
 
 ### Request Preparation
 
@@ -245,7 +246,7 @@ Emit the Task Stopping update when trusted stop targets are ready and the user's
 
 `cancelled` is not a failure input for this stage; follow the cancellation precedence and termination rule in Agent Execution without sending a failure-stage update.
 
-Input is a trusted error from the current invocation or a required attachment, a public transport error, or an execution state that remains unconfirmed. Emit the Failure Handling update once, then determine and deliver the trusted public outcome. Do not claim a retry is underway without authorization.
+Input is a trusted error from the current invocation or a required attachment, a public transport error, or an execution state that remains unconfirmed. Emit the Failure Handling update once, then determine and deliver the trusted public outcome. Do not claim a retry is underway before it is initiated.
 
 #### Error Normalization and User Boundaries
 
@@ -255,7 +256,7 @@ If a trusted rejection confirms that the request was rejected before creating or
 
 #### Retries and Unconfirmed States
 
-1. `retryable=false` terminates the current failed invocation. `retryable=true` only permits offering the user a retry after explaining the public failure reason and retry type. A business retry requires explicit user authorization and a new stable `idempotency_key`; only transport recovery of the same call reuses the original arguments and key.
+1. `retryable=false` terminates the current failed invocation and ends the current task round. `retryable=true` permits a retry within the original task scope after explaining the public failure reason and retry type, without additional user confirmation. A business retry uses a new stable `idempotency_key`; only transport recovery of the same call reuses the original arguments and key. A missing retryability flag does not permit a retry.
 2. If a query times out, disconnects, or fails to parse after obtaining `invocation_id`, query the same ID within Agent Execution's ten-query budget; do not call `openagent_run` again. When the budget is exhausted, the handle is invalid, or the query is explicitly rejected, explain that the result remains unconfirmed and retain the context. Do not claim actual task failure.
 
 #### Continue After Insufficient Balance
@@ -282,7 +283,7 @@ If a trusted rejection confirms that the request was rejected before creating or
 
 **Output:** A trusted public reason and, when needed, preserved business goal, context, and continuation information.
 
-**Next:** End handling of the current failure or unknown state. Re-enter Request Validation only for an explicitly authorized new business retry or when the conditions for continuing after insufficient balance are met.
+**Next:** Re-enter Request Validation for a confirmed failure with trusted `retryable=true`, without additional user confirmation, or when the conditions for continuing after insufficient balance are met. Otherwise, end handling of the current failure or unknown state.
 
 ## Shared OpenAgent Rules
 

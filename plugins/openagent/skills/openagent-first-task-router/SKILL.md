@@ -303,6 +303,8 @@ On a query timeout, disconnect, or parsing failure, retain the same task ID and 
 
 If no terminal result is available after ten queries, explain that the task is still running (or its latest status is unconfirmed), retain the handle, and end this waiting round. Do not stop the task, deliver the receipt as a result, or automatically create another task. Reuse the same ID when the user later asks to continue querying.
 
+On a confirmed execution failure, first report the trusted public reason through `Invocation Failed`. `retryable=false` ends the current task round; do not rerun, refine the prompt, or switch Agents to bypass it. `retryable=true` permits a new business retry within the original task scope without additional user confirmation; use a new stable `idempotency_key` and return to `Agent Execution`. A missing retryability flag does not permit a retry.
+
 **Output:** The complete terminal result from `openagent_run` or `openagent_get_agent_result`, or an explicit start rejection. The progress card is display-only. Before a terminal result is available, retain only the task handle and latest status.
 
 **MANDATORY IMMEDIATE NEXT STEP:** For `cancelled`, acknowledge cancellation and end immediately without entering subsequent stages. Only other complete terminal states or an explicit start rejection proceed to `Result Validation and Delivery`. If the result is usable but the overall task is incomplete, the next assistant message must first display the Output Handling summary and all user-facing artifacts before any downstream action.
