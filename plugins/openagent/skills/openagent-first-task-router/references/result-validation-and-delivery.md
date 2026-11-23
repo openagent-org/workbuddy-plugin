@@ -27,11 +27,11 @@ When the result does not satisfy the request, compare it with the previous resul
 
 ## Output Handling
 
-**HARD GATE:** If a usable terminal Tool result does not complete the task, deliver its required Output Handling summary, including every returned artifact, before any retry, agent switch, dependent task, or `Host Completion`.
+**HARD GATE:** If a usable terminal Tool result does not complete the user's overall request, deliver its required Output Handling summary, including every returned artifact, before any retry, agent switch, dependent task, or `Host Completion`.
 
 Treat a successful Remote Agent result as the task content. Return it with only the minimal formatting needed for the user’s requested format; do not independently re-evaluate, fact-check, expand, or rewrite it unless the user requests this or the result has an obvious defect. Do not reproduce the raw response or present another Remote Agent as the speaker.
 
-For a usable result with explicit remaining gaps, excluding confirmed execution failures, display exactly one brief user-facing summary before retrying, searching for another candidate Remote Agent, or passing it to a dependent task; do not emit a provisional or additional result summary for the same invocation. Format it as a standalone Markdown message with a `### <concise task-specific result title>` heading, a `Completed` section containing the summary and all user-facing artifacts, and a `Remaining` section only when gaps exist. Summarize what the current task produced and any remaining gaps in that task; do not expose raw response structures, invocation logs, or internal metadata. At the end of each workflow, respond according to the final result state.
+For a usable result that leaves the user's overall request unfinished, even when the current subtask is complete, excluding confirmed execution failures, display exactly one brief user-facing summary before retrying, searching for another candidate Remote Agent, or passing it to a dependent task; do not emit a provisional or additional result summary for the same invocation. Format it as a standalone Markdown message with a `### <concise task-specific result title>` heading, a `Completed:` section containing the summary and all user-facing artifacts, and a `Remaining:` section only when the current result has gaps. Pending downstream tasks are not gaps in the current result. Send the summary before a separate next-stage status update and dependent invocation. Summarize what the current task produced and any remaining gaps in that task; do not expose raw response structures, invocation logs, or internal metadata. At the end of each workflow, respond according to the final result state.
 
 Every usable non-final result must display all user-facing files, web pages, and links returned by the Remote Agent before any retry or dependent task. Preserve them as native or clickable items; never omit them, replace them with a summary, or defer them to the final response.
 
@@ -67,7 +67,7 @@ Apply these rules to final and usable non-final results. Preserve the original o
 
 ### Result Meets Requirements
 
-Return the complete result directly in the user's requested format. Do not add commentary about the invocation process or completion status.
+Only when the user's overall request is complete, return the complete result directly in the user's requested format without invocation or completion commentary. Otherwise, follow Output Handling before continuing downstream tasks.
 
 ### Result Does Not Meet Requirements
 
@@ -182,7 +182,7 @@ Links:
 
 - For trusted `cancelled`, only acknowledge cancellation and end; do not enter any of the following completion or retry branches.
 
-- Finish when the result satisfies the task. For a confirmed execution failure, follow `Invocation Failed`.
+- Finish when the user's overall request is complete. If the current subtask is complete but downstream tasks remain, deliver its Output Handling summary and continue in dependency order. For a confirmed execution failure, follow `Invocation Failed`.
 
 The following branches apply only to a usable result with explicit remaining gaps; confirmed execution failures follow `Invocation Failed` instead.
 
