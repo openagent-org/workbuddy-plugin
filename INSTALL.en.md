@@ -140,6 +140,8 @@ Confirmed auth failure (`Unauthorized`) only: step 4, `mode='refresh'`, once. If
 
 ## Skills and message (settings)
 
+New markets: `autoUpdate: true` (also Windows JSON). Keep existing values/absence.
+
 Five Skills are included. macOS preparation sets user settings/project exclusions; no separate edit. Confirm `CODEBUDDY_PROJECT_DIR` (default: cwd) is the task project root.
 
 After writing configuration, setup explicitly runs the WorkBuddy bundled or PATH codebuddy CLI to add the selected official marketplace and install the user-scoped OpenAgent plugin. It first verifies that the official repository defaults to rel. Synchronization and the existing source, registration, file and dependency integrity checks share a 60-second deadline. A CLI failure or timeout stops the attempt without automatic replay. `PLUGIN_READY` means files/registration, not tool loading. Do not automatically rerun the preparation command or schedule restart after failure/timeout; no cache clearing/manual Skill copies. Only an explicit user request to resume permits recovery, with restart unscheduled and sending unattempted.
@@ -220,6 +222,7 @@ Native Read/Edit only the returned current-user `.workbuddy/settings.json`; merg
   },
   "extraKnownMarketplaces": {
     "openagent-workbuddy": {
+      "autoUpdate": true,
       "source": {
         "source": "git",
         "url": "https://gitee.com/openagent-org/workbuddy-plugin.git",

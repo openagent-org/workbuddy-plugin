@@ -42,7 +42,7 @@ try:
     before = path.read_bytes() if path.exists() else None
     data = json.loads(before) if before is not None else {}
     source = selected_source
-    market = data.setdefault('extraKnownMarketplaces', {}).setdefault('openagent-workbuddy', {'source': source})
+    market = data.setdefault('extraKnownMarketplaces', {}).setdefault('openagent-workbuddy', {'source': source, 'autoUpdate': True})
     if market.get('source') not in official_sources.values(): raise SystemExit('openagent-workbuddy 市场来源冲突，停止')
     if requested_source is None:
         source = market['source']

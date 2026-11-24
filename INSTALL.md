@@ -140,6 +140,8 @@ JSON
 
 ## 安装 Skills 并准备启动消息（settings）
 
+仅首次创建 `openagent-workbuddy` 市场配置时设置 `autoUpdate: true`；已有市场配置保留原有值或缺省状态，重装不覆盖用户选择。Windows 下方 JSON 中的 `autoUpdate` 也仅用于首次创建市场配置。
+
 原生插件提供五个 Skills。macOS 的准备步骤负责用户设置和当前项目命令排除项；执行前确认 `CODEBUDDY_PROJECT_DIR`（未提供时为当前目录）是任务项目根目录，不另行编辑设置。
 
 setup 写好配置后，通过 WorkBuddy 内置或 PATH 中的原生 codebuddy CLI，依次执行所选官方市场的 add 和用户级 OpenAgent install。同步前核对官方仓库默认分支为 rel；同步与原有来源、安装登记、文件和依赖完整性检查共用 60 秒期限。CLI 报错或超时停止，不自动重放。`PLUGIN_READY` 表示文件和安装登记就绪，不代表工具已加载。失败/超时后，安装 Agent 不得自动重跑准备命令或安排重启，不清缓存或手工复制 Skills；只有用户明确要求恢复，且确认未安排重启、未尝试发送时才恢复。
@@ -224,6 +226,7 @@ try {
   },
   "extraKnownMarketplaces": {
     "openagent-workbuddy": {
+      "autoUpdate": true,
       "source": {
         "source": "git",
         "url": "https://gitee.com/openagent-org/workbuddy-plugin.git",
