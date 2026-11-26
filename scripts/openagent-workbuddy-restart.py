@@ -785,6 +785,8 @@ def launch(args):
     try:
         write_private(REQUEST, json.dumps(request, ensure_ascii=False))
     except FileExistsError:
+        if scheduled_task and reuse_scheduled_request(request):
+            return True
         raise RestartError('REQUEST_ALREADY_EXISTS: 已有重启请求，请核对原后台和发送结果，不重复安排') from None
     except OSError as error:
         raise RestartError(operation_error('write_request', error)) from error
@@ -950,6 +952,38 @@ def arm_scheduled_worker(run_directory, task_name):
         temporary.unlink(missing_ok=True)
 
 
+def reuse_scheduled_request(request):
+    """同一次安装的已就绪后台只回读确认，不重新安排或改写请求。"""
+    try:
+        existing = json.loads(REQUEST.read_text(encoding='utf-8-sig'))
+        name = existing.get('scheduled_task') if isinstance(existing, dict) else None
+        if (not request['session_id'] or not request.get('scheduled_python') or not isinstance(name, str) or
+                not re.fullmatch(TASK_PATTERN, name) or
+                existing != dict(request, scheduled_task=name)):
+            return False
+        directory = CONFIG / 'restart-runs' / name
+        armed = json.loads((directory / 'armed.json').read_text(encoding='utf-8-sig'))
+        ready = json.loads((directory / 'ready.json').read_text(encoding='utf-8-sig'))
+        executable = request['scheduled_python']
+        if (armed != {'task_name': name} or not isinstance(ready, dict) or
+                ready.get('task_name') != name or type(ready.get('pid')) is not int or ready['pid'] <= 0 or
+                not same_executable(ready.get('python_executable', ''), executable) or
+                (directory / 'result.json').exists()):
+            return False
+        verified = task_operation('validate_ready', dict(task_payload(name, executable), worker_pid=ready['pid']))
+        if (verified.get('process_verified') is not True or verified.get('worker_pid') != ready['pid'] or
+                json.loads(REQUEST.read_text(encoding='utf-8-sig')) != existing or
+                (directory / 'result.json').exists()):
+            return False
+    except (OSError, ValueError, RestartError, subprocess.TimeoutExpired):
+        return False
+    log('TASK_NAME=' + name)
+    log('SCHEDULED_WORKER_PID=' + str(ready['pid']))
+    log('RESULT_PATH=' + str(directory / 'result.json'))
+    log('重启已安排，复用本次安装的已就绪后台；请结束当前回复')
+    return True
+
+
 def launch_scheduled(args, ready_timeout=30):
     if os.environ.get('CODEBUDDY_SESSION_ID') and not args.wait_for_turn:
         raise RestartError('WORKBUDDY_CONTEXT_REQUIRES_WAIT_FOR_TURN')
@@ -961,7 +995,8 @@ def launch_scheduled(args, ready_timeout=30):
     prepared.prepare_scheduled = name
     prepared.scheduled_python = str(executable)
     # Existing trust, turn, app-path and exclusive request checks remain authoritative.
-    launch(prepared)
+    if launch(prepared):
+        return
     run_directory = CONFIG / 'restart-runs' / name
     payload = task_payload(name, executable)
     armed = False
