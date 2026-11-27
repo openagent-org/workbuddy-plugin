@@ -546,7 +546,7 @@ RESTORE_TURN_JS = r'''(async sessionId=>{
 
 
 def send_message(request):
-    """通过输入状态和发送 API 提交一次消息，确认创建后导航；未知结果不补发。"""
+    """通过发送 API 确认一次提交；会话定位仅用于导航，未知结果不补发。"""
     message = request['message']
     log('等待 CDP 端口 %d …' % PORT)
     for _ in range(80):
@@ -607,7 +607,7 @@ def send_message(request):
             time.sleep(0.5)
         if not target_id:
             log('[!] 提交已确认，会话定位未确认；不补发消息')
-            return False
+            return True
         time.sleep(1)
         log('本次新会话已创建: ' + str(target_id))
         if not can_navigate:
@@ -658,7 +658,7 @@ def worker():
         log('旧实例已退出')
         start_app(executable)
         ok = send_message(request)
-        log('流程结束（发送结果=%s）' % ('成功' if ok else '未确认'))
+        log('流程结束（启动消息提交=%s）' % ('已确认' if ok else '未确认'))
         sys.exit(0 if ok else 1)
     finally:
         try:
